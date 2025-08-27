@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rpa-rabbitmq
+    ports:
+      - "5672:5672"    # AMQP port
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: rpa_user
+      RABBITMQ_DEFAULT_PASS: rpa_password
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - rpa-network
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: rpa-sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      SA_PASSWORD: "RpaPassword123!"
+      ACCEPT_EULA: "Y"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - rpa-network
+
+  rpa-listener:
+    build:
+      context: .
+      dockerfile: src/Rpa.Listener/Dockerfile
+    container_name: rpa-listener
+    depends_on:
+      - rabbitmq
+      - sqlserver
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=RpaAutomationDb;User=sa;Password=RpaPassword123!;TrustServerCertificate=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=rpa_user
+      - RabbitMQ__Password=rpa_password
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - rpa-network
+    restart: unless-stopped
+
+  rpa-worker:
+    build:
+      context: .
+      dockerfile: src/Rpa.Worker/Dockerfile
+    container_name: rpa-worker
+    depends_on:
+      - rabbitmq
+      - sqlserver
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=RpaAutomationDb;User=sa;Password=RpaPassword123!;TrustServerCertificate=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=rpa_user
+      - RabbitMQ__Password=rpa_password
+      - Browser__Headless=true
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/logs/screenshots
+    networks:
+      - rpa-network
+    restart: unless-stopped
+
+  rpa-notifier:
+    build:
+      context: .
+      dockerfile: src/Rpa.Notifier/Dockerfile
+    container_name: rpa-notifier
+    depends_on:
+      - rabbitmq
+      - sqlserver
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=RpaAutomationDb;User=sa;Password=RpaPassword123!;TrustServerCertificate=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=rpa_user
+      - RabbitMQ__Password=rpa_password
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - rpa-network
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
+  sqlserver_data:
+
+networks:
+  rpa-network:
+    driver: bridge
