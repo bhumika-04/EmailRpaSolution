@@ -146,6 +146,11 @@ catch (Exception ex)
 {
     Console.WriteLine($"\n❌ Error during ERP automation: {ex.Message}");
     Console.WriteLine($"Stack trace: {ex.StackTrace}");
+    
+    // Keep browser open for 10 seconds to see what happened
+    Console.WriteLine("\n⏳ Keeping browser open for 10 seconds to inspect...");
+    await Task.Delay(10000);
+    
     Console.WriteLine("\nPress ENTER to exit...");
     Console.ReadLine();
 }
