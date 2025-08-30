@@ -8,6 +8,7 @@ public class PlanningSheetProcessor
 {
     private readonly ILogger<PlanningSheetProcessor> _logger;
     private readonly IPage _page;
+    private readonly string _screenshotDirectory;
 
     // Field mapping with primary ID, fallback selectors, and validation
     private readonly Dictionary<string, PlanningField> _fieldMappings = new()
@@ -68,13 +69,66 @@ public class PlanningSheetProcessor
             FallbackSelectors = new[] { "[name='FL']", "[placeholder*='Folded L']" },
             IsConditional = true,
             Segment = "JobSize"
+        },
+        
+        // Printing Details (Segment 3) - Future enhancement fields
+        ["PrintingStyle"] = new PlanningField
+        {
+            PrimarySelector = ".dx-texteditor-input[aria-haspopup='listbox'][data-dx_placeholder*='Printing Style']",
+            FallbackSelectors = new[] { "[placeholder*='Printing Style']", ".dx-texteditor-input[role='combobox'][aria-expanded='false']" },
+            IsDevExtremeDropdown = true,
+            IsRequired = false,
+            Segment = "PrintingDetails"
+        },
+        ["PlateType"] = new PlanningField
+        {
+            PrimarySelector = ".dx-texteditor-input[aria-haspopup='listbox'][data-dx_placeholder*='Select Plate Type']",
+            FallbackSelectors = new[] { "[placeholder*='Plate Type']", ".dx-texteditor-input[aria-expanded='true'][aria-controls*='dx-']" },
+            IsDevExtremeDropdown = true,
+            IsRequired = false,
+            Segment = "PrintingDetails"
+        },
+        
+        // Machine Wastage (Segment 4) - Future enhancement fields  
+        ["WastageType"] = new PlanningField
+        {
+            PrimarySelector = ".dx-texteditor-input[aria-haspopup='listbox'][data-dx_placeholder*='Select Type']",
+            FallbackSelectors = new[] { "[placeholder*='Select Type']", ".dx-texteditor-input[aria-expanded='true'][aria-activedescendant*='dx-a79482a1']" },
+            IsDevExtremeDropdown = true,
+            IsRequired = false,
+            Segment = "MachineWastage"
+        },
+        ["MakeReadyWastage"] = new PlanningField
+        {
+            PrimarySelector = "#PlanMakeReadyWastage",
+            FallbackSelectors = new[] { "[placeholder*='Enter Qty']", "input[title*='Make Ready Wastage']" },
+            ValidationPattern = @"^\d+$",
+            IsRequired = false,
+            Segment = "MachineWastage"
+        },
+        ["GrainDirection"] = new PlanningField
+        {
+            PrimarySelector = ".dx-texteditor-input[aria-haspopup='listbox'][data-dx_placeholder*='Grain Direction']",
+            FallbackSelectors = new[] { "[placeholder*='Grain Direction']", ".dx-texteditor-input[aria-expanded='true'][aria-activedescendant*='dx-e75b949b']" },
+            IsDevExtremeDropdown = true,
+            IsRequired = false,
+            Segment = "MachineWastage"
+        },
+        ["OnlineCoating"] = new PlanningField
+        {
+            PrimarySelector = ".dx-texteditor-input[aria-haspopup='listbox'][data-dx_placeholder*='Select coating']",
+            FallbackSelectors = new[] { "[placeholder*='coating']", ".dx-texteditor-input[aria-expanded='true'][aria-activedescendant*='dx-3ca649b7']" },
+            IsDevExtremeDropdown = true,
+            IsRequired = false,
+            Segment = "MachineWastage"
         }
     };
 
-    public PlanningSheetProcessor(ILogger<PlanningSheetProcessor> logger, IPage page)
+    public PlanningSheetProcessor(ILogger<PlanningSheetProcessor> logger, IPage page, string? screenshotDirectory = null)
     {
         _logger = logger;
         _page = page;
+        _screenshotDirectory = screenshotDirectory ?? Path.Combine(Directory.GetCurrentDirectory(), "logs", "screenshots");
     }
 
     public async Task<ProcessingResult> FillPlanningSheetAsync(ErpJobData erpData)
@@ -649,6 +703,18 @@ public class PlanningSheetProcessor
         {
             _logger.LogInformation("Filling DevExtreme dropdown {fieldName} with value: {value}", fieldName, value);
             
+            // Special handling for Raw Material dropdowns with dynamic database search
+            if (fieldName == "Item Quality")
+            {
+                var qualityResult = await FillQualityDropdownWithSearch(selector, value, fieldName, filledFields, errors);
+                if (qualityResult) return;
+            }
+            else if (fieldName == "GSM" || fieldName == "Mill" || fieldName == "Finish")
+            {
+                var materialResult = await FillMaterialDropdownWithSearch(selector, value, fieldName, filledFields, errors);
+                if (materialResult) return;
+            }
+            
             // Enhanced DevExtreme handling with exact widget API calls
             var jsCode = @"
                 try {
@@ -690,7 +756,7 @@ public class PlanningSheetProcessor
                     }
 
                     // Method 2: Direct input manipulation for stubborn dropdowns
-                    const input = dropdown.querySelector('.dx-texteditor-input, input[type=""text""]');
+                    const input = dropdown.querySelector('.dx-texteditor-input, input[type=\\'text\\']');
                     if (input) {
                         // Clear existing value
                         input.value = '';
@@ -705,7 +771,7 @@ public class PlanningSheetProcessor
                         input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
                         
                         // Update the hidden input if it exists
-                        const hiddenInput = dropdown.querySelector('input[type=""hidden""]');
+                        const hiddenInput = dropdown.querySelector('input[type=\\'hidden\\']');
                         if (hiddenInput) {
                             hiddenInput.value = '" + value + @"';
                         }
@@ -802,6 +868,406 @@ public class PlanningSheetProcessor
         catch (Exception ex)
         {
             errors.Add($"Physical interaction failed for {fieldName}: {ex.Message}");
+        }
+    }
+
+    private async Task<bool> FillQualityDropdownWithSearch(string selector, string value, string fieldName, List<string> filledFields, List<string> errors)
+    {
+        try
+        {
+            _logger.LogInformation("Using specialized Quality dropdown search for: {value}", value);
+            
+            // Find the dropdown container
+            var dropdownContainer = await _page.QuerySelectorAsync(selector);
+            if (dropdownContainer == null)
+            {
+                _logger.LogWarning("Quality dropdown container not found: {selector}", selector);
+                return false;
+            }
+
+            // Click to open dropdown
+            var dropdownButton = await dropdownContainer.QuerySelectorAsync(".dx-dropdowneditor-button") ??
+                               await dropdownContainer.QuerySelectorAsync(".dx-texteditor-input");
+            
+            if (dropdownButton != null)
+            {
+                await dropdownButton.ClickAsync();
+                await _page.WaitForTimeoutAsync(1000); // Wait for dropdown to open
+            }
+
+            // Find the input field for searching
+            var searchInput = await dropdownContainer.QuerySelectorAsync(".dx-texteditor-input");
+            if (searchInput != null)
+            {
+                _logger.LogInformation("Found search input, typing quality: {value}", value);
+                
+                // Clear and type search term
+                await searchInput.FillAsync("");
+                await _page.WaitForTimeoutAsync(200);
+                await searchInput.TypeAsync(value, new ElementHandleTypeOptions { Delay = 100 });
+                await _page.WaitForTimeoutAsync(1500); // Wait for database search results
+                
+                // Wait for dropdown list to appear with search results
+                var dropdownList = await _page.WaitForSelectorAsync(".dx-list, .dx-popup-content .dx-selectbox-popup, .dx-overlay .dx-list", 
+                    new PageWaitForSelectorOptions { Timeout = 5000 });
+                
+                if (dropdownList != null)
+                {
+                    // Look for matching items in the search results
+                    var items = await dropdownList.QuerySelectorAllAsync(".dx-list-item, .dx-item");
+                    var candidateMatches = new List<(IElementHandle Element, string Text, int Score)>();
+                    
+                    // First, collect all candidates and score them
+                    foreach (var item in items)
+                    {
+                        var itemText = await item.TextContentAsync();
+                        if (itemText != null)
+                        {
+                            _logger.LogInformation("Found dropdown item: {itemText}", itemText);
+                            var score = CalculateQualityMatchScore(value, itemText);
+                            if (score > 0)
+                            {
+                                candidateMatches.Add((item, itemText, score));
+                            }
+                        }
+                    }
+                    
+                    // Sort by score (highest first) and select the best match
+                    if (candidateMatches.Any())
+                    {
+                        var bestMatch = candidateMatches.OrderByDescending(m => m.Score).First();
+                        _logger.LogInformation("Best match for '{value}': '{bestMatchText}' (Score: {score})", 
+                            value, bestMatch.Text, bestMatch.Score);
+                        
+                        await bestMatch.Element.ClickAsync();
+                        await _page.WaitForTimeoutAsync(1000);
+                        
+                        filledFields.Add($"{fieldName} = {bestMatch.Text} (smart match, score: {bestMatch.Score})");
+                        return true;
+                    }
+                    
+                    // If no scored matches, try the original simple approach
+                    foreach (var item in items)
+                    {
+                        var itemText = await item.TextContentAsync();
+                        if (itemText != null && itemText.Contains(value, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogInformation("Fallback: Clicking first matching quality item: {itemText}", itemText);
+                            await item.ClickAsync();
+                            await _page.WaitForTimeoutAsync(1000);
+                            
+                            filledFields.Add($"{fieldName} = {value} (fallback match)");
+                            return true;
+                        }
+                    }
+                }
+                
+                // If no matches found, press Enter to accept typed value
+                await _page.Keyboard.PressAsync("Enter");
+                await _page.WaitForTimeoutAsync(500);
+                filledFields.Add($"{fieldName} = {value} (manual entry)");
+                return true;
+            }
+            
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in specialized Quality dropdown handling");
+            errors.Add($"Error in Quality dropdown search: {ex.Message}");
+            return false;
+        }
+    }
+
+    private int CalculateQualityMatchScore(string searchTerm, string candidateText)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm) || string.IsNullOrWhiteSpace(candidateText))
+            return 0;
+
+        var searchLower = searchTerm.ToLower();
+        var candidateLower = candidateText.ToLower();
+        int score = 0;
+
+        // Exact match gets highest score
+        if (candidateLower == searchLower)
+            return 1000;
+
+        // Extract key terms from search
+        var searchWords = searchLower.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var candidateWords = candidateLower.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // Score based on word matches
+        foreach (var searchWord in searchWords)
+        {
+            if (candidateWords.Any(cw => cw.Contains(searchWord)))
+            {
+                // Higher score for exact word match
+                if (candidateWords.Contains(searchWord))
+                    score += 100;
+                else
+                    score += 50; // Partial word match
+            }
+        }
+
+        // Bonus for containing all search words
+        if (searchWords.All(sw => candidateWords.Any(cw => cw.Contains(sw))))
+            score += 200;
+
+        // Special scoring for paper quality terms
+        if (searchLower.Contains("art") && candidateLower.Contains("art"))
+            score += 150;
+        
+        if (searchLower.Contains("paper") && candidateLower.Contains("paper"))
+            score += 100;
+
+        // Prefer common/standard options for ambiguous matches
+        if (candidateLower.Contains("gsm"))
+        {
+            // Extract GSM value and prefer mid-range (120-200 GSM for art paper)
+            var gsmMatch = System.Text.RegularExpressions.Regex.Match(candidateLower, @"(\d+)\s*gsm");
+            if (gsmMatch.Success && int.TryParse(gsmMatch.Groups[1].Value, out int gsm))
+            {
+                if (gsm >= 120 && gsm <= 200) // Good range for art paper
+                    score += 75;
+                else if (gsm >= 80 && gsm <= 300) // Acceptable range
+                    score += 25;
+            }
+        }
+
+        // Penalty for very long names (often indicates specialized variants)
+        if (candidateText.Length > 50)
+            score -= 20;
+
+        // Bonus for shorter, cleaner names
+        if (candidateText.Length < 25 && score > 50)
+            score += 30;
+
+        return Math.Max(0, score);
+    }
+
+    private async Task<bool> FillMaterialDropdownWithSearch(string selector, string value, string fieldName, List<string> filledFields, List<string> errors)
+    {
+        try
+        {
+            _logger.LogInformation("Using Quality-style dropdown search for {fieldName}: {value}", fieldName, value);
+            
+            // Use the same approach as Quality dropdown - find search input and type
+            var searchInput = await _page.QuerySelectorAsync($"{selector} .dx-texteditor-input");
+            if (searchInput != null)
+            {
+                _logger.LogInformation("Found search input for {fieldName}, typing: {value}", fieldName, value);
+                
+                // Clear and type search term (same as Quality dropdown)
+                await searchInput.FillAsync("");
+                await _page.WaitForTimeoutAsync(200);
+                await searchInput.TypeAsync(value, new ElementHandleTypeOptions { Delay = 100 });
+                await _page.WaitForTimeoutAsync(1500); // Wait for database search results
+            }
+            
+            // Wait for dropdown list to appear with search results
+            var dropdownList = await _page.WaitForSelectorAsync(".dx-list, .dx-popup-content .dx-selectbox-popup, .dx-overlay .dx-list", 
+                new PageWaitForSelectorOptions { Timeout = 5000 });
+            
+            if (dropdownList != null)
+            {
+                // Look for matching items in the search results (same as Quality dropdown)
+                var items = await dropdownList.QuerySelectorAllAsync(".dx-list-item, .dx-item");
+                var candidateMatches = new List<(IElementHandle Element, string Text, int Score)>();
+                
+                // First, collect all candidates and score them (same as Quality dropdown)
+                foreach (var item in items)
+                {
+                    var itemText = await item.TextContentAsync();
+                    if (itemText != null)
+                    {
+                        _logger.LogInformation("Found {fieldName} dropdown item: {itemText}", fieldName, itemText);
+                        var score = CalculateMaterialMatchScore(value, itemText, fieldName);
+                        if (score > 0)
+                        {
+                            candidateMatches.Add((item, itemText, score));
+                        }
+                    }
+                }
+                
+                // Sort by score (highest first) and select the best match (same as Quality dropdown)
+                if (candidateMatches.Any())
+                {
+                    var bestMatch = candidateMatches.OrderByDescending(m => m.Score).First();
+                    _logger.LogInformation("Best match for {fieldName} '{value}': '{bestMatchText}' (Score: {score})", 
+                        fieldName, value, bestMatch.Text, bestMatch.Score);
+                    
+                    await bestMatch.Element.ClickAsync();
+                    await _page.WaitForTimeoutAsync(1000);
+                    
+                    // Ensure dropdown is closed after selection
+                    await _page.Keyboard.PressAsync("Escape");
+                    await _page.WaitForTimeoutAsync(300);
+                    
+                    filledFields.Add($"{fieldName} = {bestMatch.Text} (smart match, score: {bestMatch.Score})");
+                    return true;
+                }
+                
+                // If no scored matches, collect available options for error reporting
+                var availableOptions = new List<string>();
+                foreach (var item in items)
+                {
+                    var optText = await item.TextContentAsync();
+                    if (!string.IsNullOrEmpty(optText))
+                        availableOptions.Add(optText);
+                }
+                
+                // No match found - handle error with screenshot and email notification
+                var errorMessage = $"Parameter '{value}' not found in {fieldName} dropdown. Available options: {string.Join(", ", availableOptions)}";
+                await HandleDropdownError(fieldName, value, errorMessage, errors, availableOptions);
+                
+                // Select first option as fallback (same as Quality dropdown)
+                if (items.Count > 0)
+                {
+                    var firstItem = items[0];
+                    var firstItemText = await firstItem.TextContentAsync();
+                    _logger.LogWarning("No exact match found for {fieldName} '{value}', selecting first option as fallback: {optionText}", fieldName, value, firstItemText);
+                    await firstItem.ClickAsync();
+                    await _page.WaitForTimeoutAsync(1000);
+                    filledFields.Add($"{fieldName} = {firstItemText} (fallback - '{value}' not found)");
+                    return true;
+                }
+            }
+            
+            // If no dropdown appeared but we have search input, press Tab then Enter (accept typed value)
+            if (searchInput != null)
+            {
+                _logger.LogInformation("No dropdown results appeared for {fieldName} '{value}', accepting typed value and closing dropdown", fieldName, value);
+                
+                // Press Escape to close any open dropdown first
+                await _page.Keyboard.PressAsync("Escape");
+                await _page.WaitForTimeoutAsync(300);
+                
+                // Re-focus on the input and accept the typed value
+                await searchInput.ClickAsync();
+                await _page.WaitForTimeoutAsync(200);
+                await _page.Keyboard.PressAsync("Tab");
+                await _page.WaitForTimeoutAsync(300);
+                await _page.Keyboard.PressAsync("Enter");
+                await _page.WaitForTimeoutAsync(500);
+                
+                // Final escape to ensure all dropdowns are closed
+                await _page.Keyboard.PressAsync("Escape");
+                await _page.WaitForTimeoutAsync(300);
+                
+                filledFields.Add($"{fieldName} = {value} (typed value accepted - no dropdown results)");
+                return true;
+            }
+            
+            // Ensure dropdown is closed even if we couldn't process it
+            await _page.Keyboard.PressAsync("Escape");
+            await _page.WaitForTimeoutAsync(300);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in {fieldName} dropdown handling", fieldName);
+            await HandleDropdownError(fieldName, value, $"Exception in {fieldName} dropdown: {ex.Message}", errors);
+            return false;
+        }
+    }
+
+    private int CalculateMaterialMatchScore(string searchValue, string itemText, string fieldName)
+    {
+        if (string.IsNullOrEmpty(searchValue) || string.IsNullOrEmpty(itemText))
+            return 0;
+        
+        int score = 0;
+        var lowerSearch = searchValue.ToLower();
+        var lowerItem = itemText.ToLower();
+        
+        // Exact match gets highest score (same as Quality dropdown)
+        if (lowerItem == lowerSearch)
+            return 1000;
+        
+        // Field-specific scoring
+        switch (fieldName)
+        {
+            case "GSM":
+                // For GSM, look for numeric matches
+                if (int.TryParse(searchValue, out int targetGsm))
+                {
+                    var numbers = System.Text.RegularExpressions.Regex.Matches(itemText, @"\d+");
+                    foreach (System.Text.RegularExpressions.Match match in numbers)
+                    {
+                        if (int.TryParse(match.Value, out int itemGsm) && itemGsm == targetGsm)
+                            return 800; // High score for exact GSM match
+                    }
+                }
+                // Substring match for GSM
+                if (lowerItem.Contains(lowerSearch))
+                    return 600;
+                break;
+                
+            case "Mill":
+            case "Finish":
+                // For Mill and Finish, prioritize exact word matches
+                if (lowerItem.Contains(lowerSearch))
+                    return 700;
+                if (lowerSearch.Contains(lowerItem))
+                    return 600;
+                // Check for word boundary matches
+                if (System.Text.RegularExpressions.Regex.IsMatch(lowerItem, $@"\b{System.Text.RegularExpressions.Regex.Escape(lowerSearch)}\b"))
+                    return 750;
+                break;
+        }
+        
+        return 0; // No match
+    }
+
+    private async Task HandleDropdownError(string fieldName, string requestedValue, string errorMessage, List<string> errors, List<string>? availableOptions = null)
+    {
+        _logger.LogError("Dropdown Error - Field: {fieldName}, Requested: {requestedValue}, Error: {errorMessage}", fieldName, requestedValue, errorMessage);
+        errors.Add(errorMessage);
+        
+        try
+        {
+            // Take screenshot for error documentation
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var screenshotPath = Path.Combine(_screenshotDirectory, $"dropdown_error_{fieldName}_{timestamp}.png");
+            
+            // Ensure screenshot directory exists
+            Directory.CreateDirectory(_screenshotDirectory);
+            
+            await _page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = screenshotPath,
+                FullPage = true
+            });
+            
+            _logger.LogInformation("Screenshot saved for {fieldName} dropdown error: {screenshotPath}", fieldName, screenshotPath);
+            
+            // Prepare error notification data for email service
+            var errorNotification = new
+            {
+                FieldName = fieldName,
+                RequestedValue = requestedValue,
+                ErrorMessage = errorMessage,
+                ScreenshotPath = screenshotPath,
+                Timestamp = DateTime.Now,
+                AvailableOptions = availableOptions ?? new List<string>(),
+                PageUrl = _page.Url,
+                PageTitle = await _page.TitleAsync()
+            };
+            
+            // Log error notification data (this would be picked up by the notification service)
+            _logger.LogWarning("DROPDOWN_ERROR_NOTIFICATION: {errorNotification}", System.Text.Json.JsonSerializer.Serialize(errorNotification));
+            
+            // Add screenshot path to errors for tracking
+            errors.Add($"Screenshot saved: {screenshotPath}");
+            
+            // Add structured error data for email notification
+            errors.Add($"ERROR_NOTIFICATION_DATA: {System.Text.Json.JsonSerializer.Serialize(errorNotification)}");
+            
+        }
+        catch (Exception screenshotEx)
+        {
+            _logger.LogError(screenshotEx, "Failed to take screenshot for {fieldName} error", fieldName);
+            errors.Add($"Failed to capture error screenshot for {fieldName}: {screenshotEx.Message}");
         }
     }
 }

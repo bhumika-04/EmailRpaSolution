@@ -52,8 +52,8 @@ var testErpData = new ErpJobData
     Material = new Material
     {
         Quality = "Real Art Paper",
-        Gsm = 100,
-        Mill = "JK",
+        Gsm = 250,
+        Mill = "Bajaj",
         Finish = "Gloss"
     },
     PrintingDetails = new PrintingDetails

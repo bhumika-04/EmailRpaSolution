@@ -783,7 +783,8 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
             
             // Use the dedicated PlanningSheetProcessor for comprehensive form filling
             var planningLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<PlanningSheetProcessor>();
-            var planningProcessor = new PlanningSheetProcessor(planningLogger, _page);
+            var screenshotDir = Path.Combine(Directory.GetCurrentDirectory(), "logs", "screenshots");
+            var planningProcessor = new PlanningSheetProcessor(planningLogger, _page, screenshotDir);
             var result = await planningProcessor.FillPlanningSheetAsync(erpData);
             
             if (result.Success)

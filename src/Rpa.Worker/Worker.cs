@@ -104,6 +104,9 @@ public class Worker : BackgroundService
                 RecipientEmail = job.SenderEmail
             }, QueueNames.Notifications);
 
+            // Handle dropdown error notifications if present
+            await ProcessDropdownErrorNotifications(job, result);
+
             _logger.LogInformation("Job {jobId} processed successfully. Status: {status}", 
                 job.Id, job.Status);
         }
@@ -289,6 +292,65 @@ public class Worker : BackgroundService
             Message = "General automation completed",
             Data = new Dictionary<string, object> { { "processedAt", DateTime.UtcNow } }
         };
+    }
+
+    private async Task ProcessDropdownErrorNotifications(Job job, ProcessingResult result)
+    {
+        try
+        {
+            if (result.Errors == null || !result.Errors.Any())
+                return;
+
+            // Look for dropdown error notification data in the errors
+            var errorNotifications = new List<object>();
+            
+            foreach (var error in result.Errors)
+            {
+                if (error.StartsWith("ERROR_NOTIFICATION_DATA:"))
+                {
+                    try
+                    {
+                        var jsonData = error.Substring("ERROR_NOTIFICATION_DATA:".Length).Trim();
+                        var notificationData = System.Text.Json.JsonSerializer.Deserialize<object>(jsonData);
+                        errorNotifications.Add(notificationData);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to parse dropdown error notification data");
+                    }
+                }
+            }
+
+            // Send error notifications if any were found
+            if (errorNotifications.Any())
+            {
+                foreach (var notification in errorNotifications)
+                {
+                    await _messageQueue.PublishAsync(new JobNotification
+                    {
+                        JobId = job.Id,
+                        Status = JobStatus.Failed,
+                        Result = new ProcessingResult
+                        {
+                            Success = false,
+                            Message = "Dropdown parameter not found - requires manual review",
+                            Data = new Dictionary<string, object> 
+                            { 
+                                { "errorNotification", notification },
+                                { "notificationType", "DROPDOWN_ERROR" }
+                            }
+                        },
+                        RecipientEmail = job.SenderEmail
+                    }, QueueNames.Notifications);
+                    
+                    _logger.LogInformation("Sent dropdown error notification for job {jobId}", job.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing dropdown error notifications for job {jobId}", job.Id);
+        }
     }
 }
 

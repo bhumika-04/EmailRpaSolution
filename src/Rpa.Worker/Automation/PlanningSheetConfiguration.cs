@@ -295,6 +295,7 @@ public class PlanningField
     public bool IsRequired { get; set; } = false;
     public bool IsConditional { get; set; } = false;
     public bool IsCalculated { get; set; } = false;
+    public bool IsDevExtremeDropdown { get; set; } = false;
     public string Segment { get; set; } = string.Empty;
     public string DataPath { get; set; } = string.Empty;
     public string DefaultValue { get; set; } = string.Empty;
