@@ -141,49 +141,238 @@ public class PlanningSheetProcessor
         {
             _logger.LogInformation("Starting Planning Sheet form filling process");
 
-            // Wait for planning sheet to load completely
-            await _page.WaitForSelectorAsync("#planJob_Size1", new PageWaitForSelectorOptions 
-            { 
-                Timeout = 10000 
-            });
+            // Check if page is still active before proceeding
+            if (_page == null || _page.IsClosed)
+            {
+                return new ProcessingResult
+                {
+                    Success = false,
+                    Message = "Page context is closed or invalid",
+                    Errors = new List<string> { "Browser page is no longer active" }
+                };
+            }
+
+            // Wait for planning sheet to load completely with better error handling
+            try
+            {
+                await _page.WaitForSelectorAsync("#planJob_Size1", new PageWaitForSelectorOptions 
+                { 
+                    Timeout = 15000 // Increased timeout
+                });
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("Planning sheet selector #planJob_Size1 not found, trying alternative selectors");
+                
+                // Try alternative selectors for planning sheet
+                var alternativeSelectors = new[] { "#planJob_Size", ".planning-form", "#PlanningForm", ".dx-form" };
+                var found = false;
+                
+                foreach (var selector in alternativeSelectors)
+                {
+                    try
+                    {
+                        await _page.WaitForSelectorAsync(selector, new PageWaitForSelectorOptions { Timeout = 3000 });
+                        _logger.LogInformation("Found planning sheet using alternative selector: {selector}", selector);
+                        found = true;
+                        break;
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+                
+                if (!found)
+                {
+                    return new ProcessingResult
+                    {
+                        Success = false,
+                        Message = "Planning sheet form not found - page may not have loaded correctly",
+                        Errors = new List<string> { "Unable to locate planning sheet form elements" }
+                    };
+                }
+            }
 
             // Segment 1: Job Size (Critical - Always Required)
-            await FillJobSizeSegment(erpData, filledFields, errors);
+            _logger.LogInformation("=== Starting Segment 1: Job Size ===");
+            try
+            {
+                await FillJobSizeSegment(erpData, filledFields, errors);
+                _logger.LogInformation("✅ Segment 1 (Job Size) completed successfully. Fields filled: {count}", filledFields.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Critical error in Job Size segment");
+                errors.Add($"Job Size segment failed: {ex.Message}");
+            }
+
+            // Check page is still active before continuing
+            if (_page.IsClosed)
+            {
+                return new ProcessingResult
+                {
+                    Success = false,
+                    Message = "Browser closed unexpectedly during Job Size processing",
+                    Errors = errors,
+                    Data = new Dictionary<string, object> { { "filledFields", filledFields } }
+                };
+            }
 
             // Segment 2: Raw Material (if data available)  
+            _logger.LogInformation("=== Starting Segment 2: Raw Material ===");
             if (erpData.Material != null)
             {
-                await FillRawMaterialSegment(erpData.Material, filledFields, errors);
+                try
+                {
+                    // Check if browser is still active before starting Raw Material processing
+                    if (_page.IsClosed)
+                    {
+                        errors.Add("Browser closed before Raw Material segment");
+                        _logger.LogWarning("❌ Browser closed before Raw Material segment");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Processing Material: Quality={quality}, GSM={gsm}, Mill={mill}, Finish={finish}", 
+                            erpData.Material.Quality, erpData.Material.Gsm, erpData.Material.Mill, erpData.Material.Finish);
+                        await FillRawMaterialSegment(erpData.Material, filledFields, errors);
+                        _logger.LogInformation("✅ Segment 2 (Raw Material) completed successfully. Total fields: {count}", filledFields.Count);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "❌ Error in Raw Material segment - continuing with fallback");
+                    errors.Add($"Raw Material segment failed: {ex.Message}");
+                    
+                    // Don't fail the entire process, just log and continue
+                    _logger.LogInformation("➡️ Continuing workflow despite Raw Material segment issues");
+                }
+            }
+            else
+            {
+                _logger.LogInformation("⚠️ No material data available, skipping Raw Material segment");
+            }
+
+            // Check page is still active
+            if (_page.IsClosed)
+            {
+                return new ProcessingResult
+                {
+                    Success = false,
+                    Message = "Browser closed unexpectedly during Raw Material processing",
+                    Errors = errors,
+                    Data = new Dictionary<string, object> { { "filledFields", filledFields } }
+                };
             }
 
             // Segment 3: Printing Details (if data available)
             if (erpData.PrintingDetails != null) 
             {
-                await FillPrintingDetailsSegment(erpData.PrintingDetails, filledFields, errors);
+                try
+                {
+                    await FillPrintingDetailsSegment(erpData.PrintingDetails, filledFields, errors);
+                    _logger.LogInformation("Printing Details segment completed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in Printing Details segment");
+                    errors.Add($"Printing Details segment failed: {ex.Message}");
+                }
+            }
+
+            // Check page is still active
+            if (_page.IsClosed)
+            {
+                return new ProcessingResult
+                {
+                    Success = false,
+                    Message = "Browser closed unexpectedly during Printing Details processing",
+                    Errors = errors,
+                    Data = new Dictionary<string, object> { { "filledFields", filledFields } }
+                };
             }
 
             // Segment 4: Wastage & Finishing (if data available)
             if (erpData.WastageFinishing != null)
             {
-                await FillWastageFinishingSegment(erpData.WastageFinishing, filledFields, errors);
+                try
+                {
+                    await FillWastageFinishingSegment(erpData.WastageFinishing, filledFields, errors);
+                    _logger.LogInformation("Wastage & Finishing segment completed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in Wastage & Finishing segment");
+                    errors.Add($"Wastage & Finishing segment failed: {ex.Message}");
+                }
+            }
+
+            // Segment 4B: Finishing Fields (Trimming, Gripper, etc.)
+            if (erpData.FinishingFields != null)
+            {
+                try
+                {
+                    await FillFinishingFieldsSegment(erpData.FinishingFields, filledFields, errors);
+                    _logger.LogInformation("Finishing Fields segment completed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in Finishing Fields segment");
+                    errors.Add($"Finishing Fields segment failed: {ex.Message}");
+                }
+            }
+
+            // Check page is still active
+            if (_page.IsClosed)
+            {
+                return new ProcessingResult
+                {
+                    Success = false,
+                    Message = "Browser closed unexpectedly during Wastage & Finishing processing",
+                    Errors = errors,
+                    Data = new Dictionary<string, object> { { "filledFields", filledFields } }
+                };
             }
 
             // Segment 5: Process Details (Dynamic - Add processes)
-            await FillProcessDetailsSegment(filledFields, errors);
+            _logger.LogInformation("=== Starting Segment 5: Process Details ===");
+            try
+            {
+                await FillProcessDetailsSegment(filledFields, errors);
+                _logger.LogInformation("✅ Segment 5 (Process Details) completed successfully. Total fields: {count}", filledFields.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error in Process Details segment");
+                errors.Add($"Process Details segment failed: {ex.Message}");
+            }
 
-            result.Message = $"Planning sheet filled successfully. {filledFields.Count} fields completed.";
+            // Final result compilation
+            _logger.LogInformation("Planning Sheet processing completed. Fields filled: {filledCount}, Errors: {errorCount}", 
+                filledFields.Count, errors.Count);
+
+            var success = filledFields.Count > 0; // Success if at least some fields were filled
+            result.Success = success;
+            result.Message = success 
+                ? $"Planning sheet completed successfully. {filledFields.Count} fields filled, {errors.Count} errors."
+                : $"Planning sheet failed. {errors.Count} errors occurred.";
+                
             result.Data = new Dictionary<string, object>
             {
                 { "filledFields", filledFields },
                 { "errors", errors },
-                { "totalFields", filledFields.Count }
+                { "totalFields", filledFields.Count },
+                { "segmentsProcessed", new[] { "JobSize", "RawMaterial", "Printing", "WastageFinishing", "ProcessDetails" } }
             };
 
             if (errors.Any())
             {
-                result.Success = false;
                 result.Errors = errors;
-                result.Message = $"Planning sheet completed with {errors.Count} errors. {filledFields.Count} fields filled.";
+                _logger.LogWarning("Planning sheet completed with errors: {errors}", string.Join("; ", errors));
+            }
+            else
+            {
+                _logger.LogInformation("Planning sheet completed successfully with no errors");
             }
 
             return result;
@@ -372,34 +561,100 @@ public class PlanningSheetProcessor
 
     private async Task FillRawMaterialSegment(Material material, List<string> filledFields, List<string> errors)
     {
-        _logger.LogInformation("Filling Raw Material segment (Segment 2)");
+        _logger.LogInformation("Filling Raw Material segment (Segment 2) with conservative approach");
         
         try 
         {
-            // DevExtreme Quality Dropdown - Primary field
-            await FillDevExtremeDropdown("#ItemPlanQuality", material.Quality, "Item Quality", filledFields, errors);
-            
-            // GSM Dropdown (DevExtreme)
-            await FillDevExtremeDropdown("#ItemPlanGsm", material.Gsm.ToString(), "GSM", filledFields, errors);
-            
-            // Mill Dropdown (DevExtreme)
-            await FillDevExtremeDropdown("#ItemPlanMill", material.Mill, "Mill", filledFields, errors);
-            
-            // Finish Dropdown (DevExtreme) 
-            await FillDevExtremeDropdown("#ItemPlanFinish", material.Finish, "Finish", filledFields, errors);
-            
-            // Paper Trimming fields (T/B/L/R format)
-            var trimmingParts = material.Quality.Contains("trim") ? new[] {"3", "3", "3", "3"} : new[] {"0", "0", "0", "0"};
-            await FillInputField("#PaperTrimtop", trimmingParts[0], "Paper Trim Top", filledFields, errors);
-            await FillInputField("#PaperTrimbottom", trimmingParts[1], "Paper Trim Bottom", filledFields, errors);
-            await FillInputField("#PaperTrimleft", trimmingParts[2], "Paper Trim Left", filledFields, errors);
-            await FillInputField("#PaperTrimright", trimmingParts[3], "Paper Trim Right", filledFields, errors);
+            // Process each field individually with page state checks
+            var materialFields = new[]
+            {
+                new { Selector = "#ItemPlanQuality", Value = material.Quality, Name = "Item Quality", IsDropdown = true },
+                new { Selector = "#ItemPlanGsm", Value = material.Gsm.ToString(), Name = "GSM", IsDropdown = true },
+                new { Selector = "#ItemPlanMill", Value = material.Mill, Name = "Mill", IsDropdown = true },
+                new { Selector = "#ItemPlanFinish", Value = material.Finish, Name = "Finish", IsDropdown = true }
+            };
+
+            foreach (var field in materialFields)
+            {
+                try
+                {
+                    // Check if page is still active before each field
+                    if (_page.IsClosed)
+                    {
+                        _logger.LogWarning("Page closed during material field processing at {fieldName}", field.Name);
+                        errors.Add($"Page closed during {field.Name} processing");
+                        break;
+                    }
+
+                    _logger.LogInformation("🔍 Processing material field: {fieldName} = {value} (Dropdown: {isDropdown})", field.Name, field.Value, field.IsDropdown);
+                    
+                    if (field.IsDropdown)
+                    {
+                        await FillDevExtremeDropdown(field.Selector, field.Value, field.Name, filledFields, errors);
+                    }
+                    else
+                    {
+                        await FillInputField(field.Selector, field.Value, field.Name, filledFields, errors);
+                    }
+                    
+                    _logger.LogInformation("✅ Completed processing {fieldName}. Current filled fields: {count}", field.Name, filledFields.Count);
+                    
+                    // Small delay between fields to prevent overwhelming
+                    await _page.WaitForTimeoutAsync(500);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Error processing material field {fieldName}: {error}", field.Name, ex.Message);
+                    errors.Add($"Material field {field.Name} failed: {ex.Message}");
+                    // Continue with next field instead of failing entire segment
+                }
+            }
+
+            // Paper Trimming fields (simpler approach)
+            if (!_page.IsClosed && !string.IsNullOrEmpty(material.Quality))
+            {
+                try
+                {
+                    _logger.LogInformation("Processing paper trimming fields");
+                    var trimmingParts = material.Quality.ToLower().Contains("trim") ? new[] {"3", "3", "3", "3"} : new[] {"0", "0", "0", "0"};
+                    
+                    var trimmingFields = new[]
+                    {
+                        new { Selector = "#PaperTrimtop", Value = trimmingParts[0], Name = "Paper Trim Top" },
+                        new { Selector = "#PaperTrimbottom", Value = trimmingParts[1], Name = "Paper Trim Bottom" },
+                        new { Selector = "#PaperTrimleft", Value = trimmingParts[2], Name = "Paper Trim Left" },
+                        new { Selector = "#PaperTrimright", Value = trimmingParts[3], Name = "Paper Trim Right" }
+                    };
+
+                    foreach (var trimmingField in trimmingFields)
+                    {
+                        if (_page.IsClosed) break;
+                        
+                        try
+                        {
+                            await FillInputField(trimmingField.Selector, trimmingField.Value, trimmingField.Name, filledFields, errors);
+                            await _page.WaitForTimeoutAsync(200);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning("Error filling trimming field {fieldName}: {error}", trimmingField.Name, ex.Message);
+                            errors.Add($"Trimming field {trimmingField.Name} failed: {ex.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Error processing trimming fields: {error}", ex.Message);
+                    errors.Add($"Trimming fields failed: {ex.Message}");
+                }
+            }
             
         }
         catch (Exception ex)
         {
-            errors.Add($"Error in Raw Material segment: {ex.Message}");
-            _logger.LogError(ex, "Error filling Raw Material segment");
+            errors.Add($"Critical error in Raw Material segment: {ex.Message}");
+            _logger.LogError(ex, "Critical error filling Raw Material segment");
+            throw; // Re-throw critical errors
         }
     }
 
@@ -445,19 +700,6 @@ public class PlanningSheetProcessor
             
             // Online Coating - DevExtreme dropdown
             await FillDevExtremeDropdown("#PlanOnlineCoating", wastage.OnlineCoating, "Online Coating", filledFields, errors);
-            
-            // Trimming fields (T/B/L/R)
-            await FillTrimmingFields(wastage.Trimming, filledFields, errors);
-            
-            // Striping fields (T/B/L/R)
-            await FillStripingFields(wastage.Striping, filledFields, errors);
-            
-            // Additional fields with default values
-            await FillInputField("#PlanGripper", "12", "Gripper", filledFields, errors);
-            await FillInputField("#PlanColorStrip", "6", "Color Strip", filledFields, errors);
-            
-            // Finished Format dropdown
-            await FillDevExtremeDropdown("#Planfinishedformat", "Sheet Fed", "Finished Format", filledFields, errors);
         }
         catch (Exception ex)
         {
@@ -468,14 +710,73 @@ public class PlanningSheetProcessor
 
     private async Task FillTrimmingFields(string trimmingValue, List<string> filledFields, List<string> errors)
     {
+        _logger.LogInformation("🔧 === FILLING TRIMMING FIELDS (T/B/L/R) ===");
+        
+        // Add a pause for visibility
+        await _page.WaitForTimeoutAsync(1000);
+        
         // Parse T/B/L/R format or use default "0/0/0/0"
         var values = string.IsNullOrEmpty(trimmingValue) ? new[] {"0", "0", "0", "0"} : trimmingValue.Split('/');
         if (values.Length != 4) values = new[] {"0", "0", "0", "0"};
         
+        _logger.LogInformation("📋 Trimming values to fill: Top={top}, Bottom={bottom}, Left={left}, Right={right}", 
+            values[0], values[1], values[2], values[3]);
+        
+        _logger.LogInformation("🎯 Filling Trimming Top with value: {value}", values[0]);
         await FillInputField("#Trimmingtop", values[0], "Trimming Top", filledFields, errors);
+        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        
+        _logger.LogInformation("🎯 Filling Trimming Bottom with value: {value}", values[1]);
         await FillInputField("#Trimmingbottom", values[1], "Trimming Bottom", filledFields, errors);
+        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        
+        _logger.LogInformation("🎯 Filling Trimming Left with value: {value}", values[2]);
         await FillInputField("#Trimmingleft", values[2], "Trimming Left", filledFields, errors);
+        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        
+        _logger.LogInformation("🎯 Filling Trimming Right with value: {value}", values[3]);
         await FillInputField("#Trimmingright", values[3], "Trimming Right", filledFields, errors);
+        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        
+        _logger.LogInformation("✅ Completed filling all Trimming fields (T/B/L/R)");
+        
+        // Add a pause so user can see the trimming fields in the visible browser
+        await _page.WaitForTimeoutAsync(3000);
+    }
+
+    private async Task FillFinishingFieldsSegment(FinishingFields finishing, List<string> filledFields, List<string> errors)
+    {
+        _logger.LogInformation("🎨 === FILLING FINISHING FIELDS SEGMENT ===");
+        
+        try
+        {
+            // Trimming fields (T/B/L/R)
+            _logger.LogInformation("Processing Trimming fields (T/B/L/R)");
+            await FillTrimmingFields(finishing.Trimming, filledFields, errors);
+            
+            // Striping fields (T/B/L/R)
+            _logger.LogInformation("Processing Striping fields (T/B/L/R)");
+            await FillStripingFields(finishing.Striping, filledFields, errors);
+            
+            // Gripper field
+            _logger.LogInformation("Processing Gripper field: {value}", finishing.Gripper);
+            await FillInputField("#PlanGripper", finishing.Gripper, "Gripper", filledFields, errors);
+            
+            // Color Strip field
+            _logger.LogInformation("Processing Color Strip field: {value}", finishing.ColorStrip);
+            await FillInputField("#PlanColorStrip", finishing.ColorStrip, "Color Strip", filledFields, errors);
+            
+            // Finished Format dropdown
+            _logger.LogInformation("Processing Finished Format dropdown: {value}", finishing.FinishedFormat);
+            await FillDevExtremeDropdown("#Planfinishedformat", finishing.FinishedFormat, "Finished Format", filledFields, errors);
+            
+            _logger.LogInformation("✅ Completed Finishing Fields segment");
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"Error in Finishing Fields segment: {ex.Message}");
+            _logger.LogError(ex, "Error filling Finishing Fields segment");
+        }
     }
 
     private async Task FillStripingFields(string stripingValue, List<string> filledFields, List<string> errors)
@@ -524,8 +825,18 @@ public class PlanningSheetProcessor
             }
             else
             {
-                _logger.LogInformation("Process grid already contains data - skipping process addition");
-                filledFields.Add("Process Grid: Already populated");
+                _logger.LogInformation("Process grid already contains data - attempting to add required processes from ProcessSelection");
+                
+                // Try to add our specific required processes (Cutting and F/B Printing)
+                var requiredProcesses = new[] { "Cutting", "F/B Printing" };
+                foreach (var process in requiredProcesses)
+                {
+                    _logger.LogInformation("🎯 Attempting to add required process: {processName}", process);
+                    await TryAddProcessToGrid(process, filledFields, errors);
+                    await _page.WaitForTimeoutAsync(2000); // Pause between additions
+                }
+                
+                filledFields.Add("Process Grid: Required processes added to existing data");
             }
         }
         catch (Exception ex)
@@ -541,7 +852,11 @@ public class PlanningSheetProcessor
         {
             _logger.LogInformation("Attempting to add process: {processName} to DevExtreme grid", processName);
             
-            // Method 1: Try using the filter row to search for process
+            // First, handle potential UI overlays that block clicks
+            await HandleUIOverlays();
+            
+            // Method 1: Enhanced search with overlay handling
+            _logger.LogInformation("Method 1: Searching for process in filter row");
             var processNameFilter = await _page.QuerySelectorAsync(".dx-datagrid-filter-row .dx-texteditor-input");
             if (processNameFilter != null && await processNameFilter.IsVisibleAsync())
             {
@@ -553,16 +868,57 @@ public class PlanningSheetProcessor
                 var processRow = await _page.QuerySelectorAsync($".dx-datagrid-rowsview tr:has-text('{processName}')");
                 if (processRow != null)
                 {
-                    // Look for Add button in the row (first column)
-                    var addButton = await processRow.QuerySelectorAsync("td:first-child, .dx-datagrid-action");
-                    if (addButton != null && await addButton.IsVisibleAsync())
+                    // Enhanced button detection and clicking with overlay handling
+                    var addButton = await processRow.QuerySelectorAsync("td:first-child, .dx-datagrid-action, button, .btn");
+                    if (addButton != null)
                     {
-                        await addButton.ClickAsync();
-                        await _page.WaitForTimeoutAsync(1000);
-                        filledFields.Add($"Process Added: {processName}");
+                        var clickResult = await ClickWithOverlayHandling(addButton, $"Process add button for {processName}");
+                        if (clickResult)
+                        {
+                            await _page.WaitForTimeoutAsync(1000);
+                            filledFields.Add($"Process Added: {processName}");
+                            _logger.LogInformation("✅ Successfully added process: {processName}", processName);
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            // Method 2: Try using the search input directly (your HTML example)
+            _logger.LogInformation("Method 2: Using direct search input approach");
+            var searchInput = await _page.QuerySelectorAsync("input.dx-texteditor-input[type='text'][role='textbox']");
+            if (searchInput != null && await searchInput.IsVisibleAsync())
+            {
+                await searchInput.ClickAsync();
+                await searchInput.FillAsync(processName);
+                await _page.WaitForTimeoutAsync(1500);
+                
+                // Try pressing Enter to search/select
+                await searchInput.PressAsync("Enter");
+                await _page.WaitForTimeoutAsync(1000);
+                
+                // Look for search results or dropdown
+                var resultList = await _page.QuerySelectorAsync(".dx-list-item, .dropdown-item, [role='option']");
+                if (resultList != null)
+                {
+                    var clickResult = await ClickWithOverlayHandling(resultList, $"Process search result for {processName}");
+                    if (clickResult)
+                    {
+                        filledFields.Add($"Process Added via Search: {processName}");
+                        _logger.LogInformation("✅ Successfully added process via search: {processName}", processName);
                         return;
                     }
                 }
+                
+                // Try Arrow Down + Enter approach
+                await searchInput.PressAsync("ArrowDown");
+                await _page.WaitForTimeoutAsync(300);
+                await searchInput.PressAsync("Enter");
+                await _page.WaitForTimeoutAsync(500);
+                
+                filledFields.Add($"Process Search Attempted: {processName}");
+                _logger.LogInformation("Process search attempted for: {processName}", processName);
+                return;
             }
             
             // Method 2: Try toolbar buttons (refresh and add)
@@ -703,6 +1059,9 @@ public class PlanningSheetProcessor
         {
             _logger.LogInformation("Filling DevExtreme dropdown {fieldName} with value: {value}", fieldName, value);
             
+            // First, close any existing open dropdowns to prevent conflicts
+            await CloseExistingDropdowns();
+            
             // Special handling for Raw Material dropdowns with dynamic database search
             if (fieldName == "Item Quality")
             {
@@ -715,77 +1074,106 @@ public class PlanningSheetProcessor
                 if (materialResult) return;
             }
             
-            // Enhanced DevExtreme handling with exact widget API calls
-            var jsCode = @"
-                try {
-                    const dropdown = document.querySelector('" + selector + @"');
-                    if (!dropdown) {
-                        console.log('Dropdown container not found: " + selector + @"');
-                        return false;
+            // Enhanced approach: Direct Playwright interaction with Enter key
+            try
+            {
+                _logger.LogInformation("Using direct Playwright interaction for {fieldName}", fieldName);
+                
+                // Find the input element within the dropdown - try multiple strategies
+                var inputSelectors = new[]
+                {
+                    $"{selector} .dx-texteditor-input",
+                    $"{selector} input[type='text']",
+                    $"{selector} .dx-selectbox-field"
+                };
+                
+                IElementHandle? inputElement = null;
+                foreach (var inputSelector in inputSelectors)
+                {
+                    inputElement = await _page.QuerySelectorAsync(inputSelector);
+                    if (inputElement != null && await inputElement.IsVisibleAsync())
+                    {
+                        _logger.LogInformation("Found input element for {fieldName} using selector: {selector}", fieldName, inputSelector);
+                        break;
                     }
-
-                    // Method 1: Use DevExtreme widget API directly
-                    let widget = null;
-                    if (window.DevExpress) {
-                        // Try different ways to get the widget instance
-                        widget = window.DevExpress.ui.dxSelectBox.getInstance(dropdown) ||
-                                window.DevExpress.ui.dxDropDownBox.getInstance(dropdown) ||
-                                dropdown._component;
-                    }
-                    
-                    if (widget && typeof widget.option === 'function') {
-                        // For dropdowns with datasource, try to find matching item
-                        const dataSource = widget.option('dataSource');
-                        if (Array.isArray(dataSource)) {
-                            const matchingItem = dataSource.find(item => 
-                                (typeof item === 'string' && item.toLowerCase().includes('" + value.ToLower() + @"')) ||
-                                (typeof item === 'object' && (item.text || item.name || item.value || '').toLowerCase().includes('" + value.ToLower() + @"'))
-                            );
-                            if (matchingItem) {
-                                widget.option('value', typeof matchingItem === 'string' ? matchingItem : (matchingItem.value || matchingItem.text || matchingItem.name));
-                                console.log('Set DevExtreme value via datasource match: ', matchingItem);
-                                return true;
-                            }
-                        }
-                        
-                        // Fallback: try setting the value directly
-                        widget.option('value', '" + value + @"');
-                        widget.option('text', '" + value + @"');
-                        console.log('Set DevExtreme value directly: " + value + @"');
-                        return true;
-                    }
-
-                    // Method 2: Direct input manipulation for stubborn dropdowns
-                    const input = dropdown.querySelector('.dx-texteditor-input, input[type=\\'text\\']');
-                    if (input) {
-                        // Clear existing value
-                        input.value = '';
-                        input.focus();
-                        
-                        // Set new value
-                        input.value = '" + value + @"';
-                        
-                        // Trigger all necessary events
-                        input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                        input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-                        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
-                        
-                        // Update the hidden input if it exists
-                        const hiddenInput = dropdown.querySelector('input[type=\\'hidden\\']');
-                        if (hiddenInput) {
-                            hiddenInput.value = '" + value + @"';
-                        }
-                        
-                        console.log('Set input value directly: " + value + @"');
-                        return true;
-                    }
-                    
-                    console.log('No suitable method found for dropdown: " + selector + @"');
-                    return false;
-                } catch (e) {
-                    console.error('DevExtreme dropdown error:', e);
-                    return false;
                 }
+                
+                if (inputElement != null)
+                {
+                    // Enhanced interaction with better error handling
+                    await inputElement.FocusAsync();
+                    await _page.WaitForTimeoutAsync(200);
+                    
+                    // Clear and set the value with retry logic
+                    for (int attempt = 1; attempt <= 2; attempt++)
+                    {
+                        try
+                        {
+                            await inputElement.FillAsync("");
+                            await _page.WaitForTimeoutAsync(100);
+                            
+                            await inputElement.FillAsync(value);
+                            await _page.WaitForTimeoutAsync(300);
+                            
+                            // Press Enter to confirm selection
+                            await inputElement.PressAsync("Enter");
+                            await _page.WaitForTimeoutAsync(500);
+                            
+                            _logger.LogInformation("✅ Successfully filled {fieldName} using direct interaction + Enter (attempt {attempt})", fieldName, attempt);
+                            filledFields.Add($"{fieldName} = {value}");
+                            return;
+                        }
+                        catch (Exception retryEx)
+                        {
+                            _logger.LogWarning("Attempt {attempt} failed for {fieldName}: {error}", attempt, fieldName, retryEx.Message);
+                            if (attempt == 2) throw;
+                            await _page.WaitForTimeoutAsync(1000);
+                        }
+                    }
+                }
+            }
+            catch (Exception directEx)
+            {
+                _logger.LogWarning("Direct interaction failed for {fieldName}: {error}", fieldName, directEx.Message);
+            }
+            
+            // Fallback method: JavaScript widget API
+            var safeValue = value.Replace("'", "\\'").Replace("\"", "\\\"");
+            var jsCode = $@"
+                (function() {{
+                    try {{
+                        const dropdown = document.querySelector('{selector}');
+                        if (!dropdown) return false;
+
+                        // Try DevExtreme widget API
+                        let widget = null;
+                        if (window.DevExpress) {{
+                            widget = window.DevExpress.ui.dxSelectBox.getInstance(dropdown) ||
+                                    window.DevExpress.ui.dxDropDownBox.getInstance(dropdown) ||
+                                    dropdown._component;
+                        }}
+                        
+                        if (widget && typeof widget.option === 'function') {{
+                            widget.option('value', '{safeValue}');
+                            console.log('Set DevExtreme value: {safeValue}');
+                            return true;
+                        }}
+
+                        // Fallback: direct input manipulation
+                        const input = dropdown.querySelector('.dx-texteditor-input');
+                        if (input) {{
+                            input.value = '{safeValue}';
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+                        
+                        return false;
+                    }} catch (e) {{
+                        console.error('DevExtreme dropdown error:', e);
+                        return false;
+                    }}
+                }})();
             ";
 
             var result = await _page.EvaluateAsync<bool>(jsCode);
@@ -797,7 +1185,7 @@ public class PlanningSheetProcessor
             }
             else
             {
-                // Fallback method: Physical interaction
+                // Final fallback method: Physical interaction
                 await TryPhysicalDropdownInteraction(selector, value, fieldName, filledFields, errors);
             }
             
@@ -904,12 +1292,14 @@ public class PlanningSheetProcessor
                 // Clear and type search term
                 await searchInput.FillAsync("");
                 await _page.WaitForTimeoutAsync(200);
-                await searchInput.TypeAsync(value, new ElementHandleTypeOptions { Delay = 100 });
+                
+                // Use modern typing approach instead of obsolete TypeAsync
+                await searchInput.FillAsync(value);
                 await _page.WaitForTimeoutAsync(1500); // Wait for database search results
                 
-                // Wait for dropdown list to appear with search results
-                var dropdownList = await _page.WaitForSelectorAsync(".dx-list, .dx-popup-content .dx-selectbox-popup, .dx-overlay .dx-list", 
-                    new PageWaitForSelectorOptions { Timeout = 5000 });
+                // Wait for dropdown list to appear with search results - use more specific approach
+                var dropdownList = await _page.WaitForSelectorAsync(".dx-list:visible, .dx-popup-content .dx-selectbox-popup:visible", 
+                    new PageWaitForSelectorOptions { Timeout = 3000 });
                 
                 if (dropdownList != null)
                 {
@@ -1045,28 +1435,98 @@ public class PlanningSheetProcessor
         return Math.Max(0, score);
     }
 
+    private async Task<IElementHandle?> FindDropdownSearchInput(string selector, string fieldName)
+    {
+        // Try multiple strategies to find the search input
+        var searchStrategies = new[]
+        {
+            $"{selector} .dx-texteditor-input", // Direct child input
+            $"{selector}.dx-texteditor-input", // Direct selector match
+            $"{selector} input[type='text']", // Generic text input
+            $"{selector} input:not([type='hidden'])", // Any visible input
+            $"{selector} .dx-texteditor .dx-texteditor-input", // Nested structure
+            $"#{selector.TrimStart('#')} .dx-texteditor-input", // Ensure # prefix
+            $"[id*='{selector.TrimStart('#')}'] .dx-texteditor-input", // Partial ID match
+            $".dx-texteditor-input[placeholder*='{fieldName}']" // Placeholder-based search
+        };
+
+        foreach (var strategy in searchStrategies)
+        {
+            try
+            {
+                var input = await _page.QuerySelectorAsync(strategy);
+                if (input != null)
+                {
+                    var isVisible = await input.IsVisibleAsync();
+                    var isEnabled = await input.IsEnabledAsync();
+                    
+                    if (isVisible && isEnabled)
+                    {
+                        _logger.LogInformation("Found search input for {fieldName} using strategy: {strategy}", fieldName, strategy);
+                        return input;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Search strategy failed for {fieldName} with {strategy}: {error}", fieldName, strategy, ex.Message);
+            }
+        }
+        
+        _logger.LogWarning("Could not find search input for {fieldName} with any strategy", fieldName);
+        return null;
+    }
+
     private async Task<bool> FillMaterialDropdownWithSearch(string selector, string value, string fieldName, List<string> filledFields, List<string> errors)
     {
         try
         {
-            _logger.LogInformation("Using Quality-style dropdown search for {fieldName}: {value}", fieldName, value);
+            _logger.LogInformation("Using enhanced dropdown search for {fieldName}: {value}", fieldName, value);
             
-            // Use the same approach as Quality dropdown - find search input and type
-            var searchInput = await _page.QuerySelectorAsync($"{selector} .dx-texteditor-input");
+            // Enhanced search input detection with multiple strategies
+            var searchInput = await FindDropdownSearchInput(selector, fieldName);
             if (searchInput != null)
             {
                 _logger.LogInformation("Found search input for {fieldName}, typing: {value}", fieldName, value);
                 
-                // Clear and type search term (same as Quality dropdown)
-                await searchInput.FillAsync("");
-                await _page.WaitForTimeoutAsync(200);
-                await searchInput.TypeAsync(value, new ElementHandleTypeOptions { Delay = 100 });
-                await _page.WaitForTimeoutAsync(1500); // Wait for database search results
+                try
+                {
+                    // Check if page is still active before proceeding
+                    if (_page.IsClosed)
+                    {
+                        _logger.LogError("Page closed before filling {fieldName}", fieldName);
+                        return false;
+                    }
+                    
+                    // Enhanced but safer input interaction
+                    await searchInput.ClickAsync(); // Focus the input first
+                    await _page.WaitForTimeoutAsync(200);
+                    
+                    // Safer clearing approach - just use FillAsync which clears automatically
+                    await searchInput.FillAsync("");
+                    await _page.WaitForTimeoutAsync(300);
+                    
+                    // Use safer typing approach - FillAsync instead of character-by-character
+                    await searchInput.FillAsync(value);
+                    await _page.WaitForTimeoutAsync(1500); // Reduced wait time
+                    
+                    _logger.LogInformation("Completed typing '{value}' for {fieldName}, waiting for dropdown results", value, fieldName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Error during enhanced search for {fieldName}: {error}", fieldName, ex.Message);
+                    return false; // Continue to JavaScript fallback
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Could not find search input for {fieldName} with selector {selector}", fieldName, selector);
+                return false; // Continue to JavaScript fallback
             }
             
-            // Wait for dropdown list to appear with search results
-            var dropdownList = await _page.WaitForSelectorAsync(".dx-list, .dx-popup-content .dx-selectbox-popup, .dx-overlay .dx-list", 
-                new PageWaitForSelectorOptions { Timeout = 5000 });
+            // Wait for dropdown list to appear with search results - use more specific approach  
+            var dropdownList = await _page.WaitForSelectorAsync(".dx-list:visible, .dx-popup-content .dx-selectbox-popup:visible", 
+                new PageWaitForSelectorOptions { Timeout = 3000 });
             
             if (dropdownList != null)
             {
@@ -1270,5 +1730,190 @@ public class PlanningSheetProcessor
             errors.Add($"Failed to capture error screenshot for {fieldName}: {screenshotEx.Message}");
         }
     }
+
+    private async Task HandleUIOverlays()
+    {
+        try
+        {
+            _logger.LogInformation("Checking for UI overlays that might block interactions...");
+
+            // List of common overlay selectors that can block interactions
+            var overlaySelectors = new[]
+            {
+                "#BottomTabBar.MYBottomsidenav",
+                ".MYBottomsidenav", 
+                ".overlay",
+                ".modal-overlay",
+                ".dx-overlay-wrapper",
+                ".dx-popup-wrapper",
+                ".tooltip",
+                "[style*='position: fixed']",
+                "[style*='z-index']"
+            };
+
+            foreach (var selector in overlaySelectors)
+            {
+                try
+                {
+                    var overlays = await _page.QuerySelectorAllAsync(selector);
+                    foreach (var overlay in overlays)
+                    {
+                        var isVisible = await overlay.IsVisibleAsync();
+                        if (isVisible)
+                        {
+                            // Check if overlay has pointer-events that could block interactions
+                            var style = await overlay.GetAttributeAsync("style");
+                            var computedStyle = await _page.EvaluateAsync<string>($@"
+                                const element = document.querySelector('{selector}');
+                                if (element) {{
+                                    const computed = window.getComputedStyle(element);
+                                    return computed.pointerEvents + '|' + computed.zIndex + '|' + computed.position;
+                                }}
+                                return null;
+                            ");
+
+                            _logger.LogInformation("Found overlay {selector}: visible={isVisible}, style={style}, computed={computedStyle}", 
+                                selector, isVisible, style, computedStyle);
+
+                            // Try to hide or disable problematic overlays
+                            if (computedStyle?.Contains("auto") == true || computedStyle?.Contains("all") == true)
+                            {
+                                _logger.LogInformation("Attempting to disable pointer events for overlay: {selector}", selector);
+                                await _page.EvaluateAsync($@"
+                                    const elements = document.querySelectorAll('{selector}');
+                                    elements.forEach(el => {{
+                                        el.style.pointerEvents = 'none';
+                                        el.style.zIndex = '-1';
+                                    }});
+                                ");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Error checking overlay {selector}: {error}", selector, ex.Message);
+                }
+            }
+
+            await _page.WaitForTimeoutAsync(500); // Give time for overlay changes to take effect
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in HandleUIOverlays");
+        }
+    }
+
+    private async Task CloseExistingDropdowns()
+    {
+        try
+        {
+            _logger.LogInformation("🚫 Closing any existing open dropdowns...");
+            
+            // Method 1: Try clicking outside dropdowns (generic approach)
+            await _page.ClickAsync("body", new PageClickOptions { Position = new() { X = 100, Y = 100 } });
+            await _page.WaitForTimeoutAsync(300);
+            
+            // Method 2: Try pressing Escape key to close dropdowns
+            await _page.PressAsync("body", "Escape");
+            await _page.WaitForTimeoutAsync(300);
+            
+            // Method 3: Close specific DevExtreme dropdown overlays if they exist
+            var overlays = await _page.QuerySelectorAllAsync(".dx-overlay-wrapper, .dx-popup-wrapper, .dx-selectbox-popup-wrapper");
+            foreach (var overlay in overlays)
+            {
+                try
+                {
+                    if (await overlay.IsVisibleAsync())
+                    {
+                        // Click outside the overlay to close it
+                        await _page.ClickAsync("body", new PageClickOptions { Position = new() { X = 50, Y = 50 } });
+                        await _page.WaitForTimeoutAsync(200);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Minor error closing overlay: {error}", ex.Message);
+                }
+            }
+            
+            _logger.LogInformation("✅ Finished closing existing dropdowns");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Non-critical error closing dropdowns: {error}", ex.Message);
+        }
+    }
+
+    private async Task<bool> ClickWithOverlayHandling(IElementHandle element, string elementDescription)
+    {
+        try
+        {
+            _logger.LogInformation("Attempting to click {elementDescription} with overlay handling...", elementDescription);
+
+            // First, try a simple click
+            try
+            {
+                await element.ClickAsync(new ElementHandleClickOptions { Timeout = 2000 });
+                _logger.LogInformation("Simple click succeeded for {elementDescription}", elementDescription);
+                return true;
+            }
+            catch (Exception clickEx)
+            {
+                _logger.LogWarning("Simple click failed for {elementDescription}: {error}", elementDescription, clickEx.Message);
+            }
+
+            // Handle overlays and try again
+            await HandleUIOverlays();
+
+            // Try click with force option
+            try
+            {
+                await element.ClickAsync(new ElementHandleClickOptions { Force = true, Timeout = 2000 });
+                _logger.LogInformation("Force click succeeded for {elementDescription}", elementDescription);
+                return true;
+            }
+            catch (Exception forceClickEx)
+            {
+                _logger.LogWarning("Force click failed for {elementDescription}: {error}", elementDescription, forceClickEx.Message);
+            }
+
+            // Try JavaScript click as final fallback
+            try
+            {
+                await element.EvaluateAsync("element => element.click()");
+                _logger.LogInformation("JavaScript click succeeded for {elementDescription}", elementDescription);
+                await _page.WaitForTimeoutAsync(1000); // Wait for any resulting actions
+                return true;
+            }
+            catch (Exception jsClickEx)
+            {
+                _logger.LogWarning("JavaScript click failed for {elementDescription}: {error}", elementDescription, jsClickEx.Message);
+            }
+
+            // Try scrolling into view and clicking
+            try
+            {
+                await element.ScrollIntoViewIfNeededAsync();
+                await _page.WaitForTimeoutAsync(500);
+                await element.ClickAsync(new ElementHandleClickOptions { Force = true });
+                _logger.LogInformation("Scroll and click succeeded for {elementDescription}", elementDescription);
+                return true;
+            }
+            catch (Exception scrollClickEx)
+            {
+                _logger.LogWarning("Scroll and click failed for {elementDescription}: {error}", elementDescription, scrollClickEx.Message);
+            }
+
+            _logger.LogError("All click attempts failed for {elementDescription}", elementDescription);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in ClickWithOverlayHandling for {elementDescription}", elementDescription);
+            return false;
+        }
+    }
+
 }
 

@@ -4,11 +4,11 @@ using Rpa.Core.Models;
 using Rpa.Worker.Automation;
 using System.Text.Json;
 
-Console.WriteLine("🤖 Live ERP Automation - Real System Test");
+Console.WriteLine("🤖 Live ERP Automation - Testing Finish Field & Process Issues");
 Console.WriteLine("=" + new string('=', 60));
-Console.WriteLine("This will connect to your actual ERP at http://13.200.122.70/");
-Console.WriteLine("🚨 WARNING: This will interact with your real ERP system!");
-Console.WriteLine("Press ENTER to start real ERP automation...");
+Console.WriteLine("This will test the planning sheet with enhanced debugging");
+Console.WriteLine("🔍 Focus: Finish field selection and process addition");
+Console.WriteLine("Press ENTER to start ERP test...");
 Console.ReadLine();
 
 // Configuration setup
@@ -68,11 +68,41 @@ var testErpData = new ErpJobData
     WastageFinishing = new WastageFinishing
     {
         MakeReadySheets = 0,
-        WastageType = "Standard",
+        WastageType = "Machine Default",
         GrainDirection = "Across",
-        OnlineCoating = "None",
+        OnlineCoating = "Aqua Matt"
+    },
+    FinishingFields = new FinishingFields
+    {
         Trimming = "0/0/0/0",
-        Striping = "0/0/0/0"
+        Striping = "0/0/0/0",
+        Gripper = "0",
+        ColorStrip = "0",
+        FinishedFormat = "Sheet Form"
+    },
+    ProcessSelection = new ProcessSelection
+    {
+        RequiredProcesses = new List<ProcessDefinition>
+        {
+            new ProcessDefinition
+            {
+                Name = "Cutting",
+                Category = "Finishing",
+                IsRequired = true,
+                DisplayOrder = 1,
+                Parameters = new Dictionary<string, string>()
+            },
+            new ProcessDefinition
+            {
+                Name = "F/B Printing",
+                Category = "Printing",
+                IsRequired = true,
+                DisplayOrder = 2,
+                Parameters = new Dictionary<string, string>()
+            }
+        },
+        OptionalProcesses = new List<ProcessDefinition>(),
+        ContentBasedProcesses = new List<ProcessDefinition>()
     }
 };
 
@@ -86,22 +116,20 @@ Console.WriteLine($"   📏 Size: {testErpData.JobSize.Height}x{testErpData.JobS
 
 try
 {
-    Console.WriteLine("\n🚀 Starting Real ERP Automation...");
-    Console.WriteLine("Watch the browser window - you'll see each step happening!");
-    Console.WriteLine("\n📝 16-Step Real ERP Process:");
-    Console.WriteLine("1-3. Company & User Login");
-    Console.WriteLine("4-6. Navigate to Estimation & Handle Tour");
-    Console.WriteLine("7-10. Add Quantity & Content");
-    Console.WriteLine("11-13. Planning & Job Details");
-    Console.WriteLine("14-16. Add Processes & Show Cost");
+    Console.WriteLine("\n🚀 Starting ERP Test with Enhanced Debugging...");
+    Console.WriteLine("🎯 Watch for these key logs:");
+    Console.WriteLine("   • === Starting Segment 2: Raw Material ===");
+    Console.WriteLine("   • 🔍 Processing material field: Finish = Gloss");
+    Console.WriteLine("   • === Starting Segment 5: Process Details ===");
+    Console.WriteLine("   • Process grid is empty - attempting to add processes");
 
-    // Initialize the real ERP processor
+    // Initialize the ERP processor
     using var processor = new ErpEstimationProcessor(logger, configuration);
 
-    // Run the complete real workflow
+    // Run the complete workflow
     var result = await processor.ProcessEstimationWorkflowAsync(testErpData);
 
-    Console.WriteLine($"\n🎯 ERP Automation Result:");
+    Console.WriteLine($"\n🎯 ERP Test Result:");
     Console.WriteLine($"   ✅ Success: {result.Success}");
     Console.WriteLine($"   📝 Message: {result.Message}");
 
@@ -112,20 +140,6 @@ try
         if (result.Data.ContainsKey("completedSteps"))
         {
             Console.WriteLine($"   ✅ Steps Executed: {result.Data["completedSteps"]}/{result.Data["totalSteps"]}");
-        }
-
-        if (result.Data.ContainsKey("workflowSteps"))
-        {
-            Console.WriteLine($"   📋 Workflow Steps Recorded");
-        }
-
-        if (result.Data.ContainsKey("screenshot"))
-        {
-            var screenshotData = result.Data["screenshot"].ToString();
-            if (!string.IsNullOrEmpty(screenshotData))
-            {
-                Console.WriteLine($"   📸 Final Screenshot: {screenshotData.Length} characters");
-            }
         }
     }
 
@@ -138,7 +152,7 @@ try
         }
     }
 
-    Console.WriteLine("\n🏁 Real ERP automation completed!");
+    Console.WriteLine("\n🏁 ERP test completed!");
     Console.WriteLine("Press ENTER to exit...");
     Console.ReadLine();
 }
@@ -147,9 +161,10 @@ catch (Exception ex)
     Console.WriteLine($"\n❌ Error during ERP automation: {ex.Message}");
     Console.WriteLine($"Stack trace: {ex.StackTrace}");
     
-    // Keep browser open for 10 seconds to see what happened
-    Console.WriteLine("\n⏳ Keeping browser open for 10 seconds to inspect...");
-    await Task.Delay(10000);
+    // Keep browser open for 60 seconds to see what happened
+    Console.WriteLine("\n⏳ Keeping browser open for 60 seconds to inspect...");
+    Console.WriteLine("🔍 Check the visible browser window to see where the process stopped.");
+    await Task.Delay(60000);
     
     Console.WriteLine("\nPress ENTER to exit...");
     Console.ReadLine();

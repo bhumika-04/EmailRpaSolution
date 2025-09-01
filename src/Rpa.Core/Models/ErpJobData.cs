@@ -11,6 +11,8 @@ public class ErpJobData
     public Material? Material { get; set; }
     public PrintingDetails? PrintingDetails { get; set; }
     public WastageFinishing? WastageFinishing { get; set; }
+    public FinishingFields? FinishingFields { get; set; }
+    public ProcessSelection? ProcessSelection { get; set; }
 }
 
 public class CompanyLogin
@@ -75,10 +77,36 @@ public class WastageFinishing
     public string GrainDirection { get; set; } = string.Empty;
     [Display(Name = "Online Coating")]
     public string OnlineCoating { get; set; } = string.Empty;
+}
+
+public class FinishingFields
+{
     [Display(Name = "Trimming (T/B/L/R)")]
     public string Trimming { get; set; } = string.Empty;
     [Display(Name = "Striping (T/B/L/R)")]
     public string Striping { get; set; } = string.Empty;
+    [Display(Name = "Gripper")]
+    public string Gripper { get; set; } = string.Empty;
+    [Display(Name = "Color Strip")]
+    public string ColorStrip { get; set; } = string.Empty;
+    [Display(Name = "Finished Format")]
+    public string FinishedFormat { get; set; } = string.Empty;
+}
+
+public class ProcessDefinition
+{
+    public string Name { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public bool IsRequired { get; set; }
+    public int DisplayOrder { get; set; }
+    public Dictionary<string, string> Parameters { get; set; } = new();
+}
+
+public class ProcessSelection
+{
+    public List<ProcessDefinition> RequiredProcesses { get; set; } = new();
+    public List<ProcessDefinition> OptionalProcesses { get; set; } = new();
+    public List<ProcessDefinition> ContentBasedProcesses { get; set; } = new();
 }
 
 public class ErpWorkflowStep
