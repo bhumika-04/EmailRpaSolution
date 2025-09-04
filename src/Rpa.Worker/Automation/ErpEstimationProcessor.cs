@@ -507,6 +507,8 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
         // First, handle IntroJS overlay that might be blocking clicks
         await HandleIntroJSOverlay();
         
+        // Simply close the popup - no category selection needed
+        
         // Look for the left arrow close button using the correct selector
         var closeButton = await FindElementAsync(_page!, new[] { 
             "span[onclick='closeNavLeft()']",
@@ -558,6 +560,7 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
         
         return new ProcessingResult { Success = true, Message = "No quotation popup found (may already be closed)" };
     }
+
 
     private async Task<ProcessingResult> Step7_ClickAddQuantityAsync()
     {
@@ -1274,65 +1277,361 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
     }
 
     private async Task<ProcessingResult> FinalFormValidation()
+{
+    try
+    {
+        _logger.LogInformation("Step 13: Performing final form validation (panel-scoped / DevExtreme-aware)");
+
+        // 1) Scope to the Planning panel
+        var panel = await FindPlanningPanelAsync();
+
+        // 2) Define critical fields with robust, descendant-aware selectors
+        var checks = new (string label, string[] selectors)[]
+        {
+            // Job Size (use exact input if it is an input; add reasonable fallbacks)
+            ("Job Size", new[] {
+                "#planJob_Size1",
+                "input#planJob_Size1",
+                "#planJob_Size1 input"
+            }),
+
+            // Quality (DevExtreme SelectBox: value lives in descendant .dx-texteditor-input or display span)
+            ("Quality", new[] {
+                "#ItemPlanQuality .dx-texteditor-input",
+                "#ItemPlanQuality .dx-display-value",
+                "#ItemPlanQuality input"
+            }),
+
+            // Front Colors (often a plain input; still add fallback for nested input)
+            ("Front Colors", new[] {
+                "#PlanFColor",
+                "#PlanFColor .dx-texteditor-input",
+                "input#PlanFColor"
+            })
+        };
+
+        var filledCriticalFields = 0;
+        var details = new List<string>();
+
+        foreach (var (label, selectors) in checks)
+        {
+            var value = await ReadFirstNonEmptyAsync(panel, selectors);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                filledCriticalFields++;
+                details.Add($"{label}✅='{value}'");
+            }
+            else
+            {
+                details.Add($"{label}❌=empty");
+            }
+        }
+
+        // 3) Process area readiness (same as your original intent but scoped)
+        var processAreaReady = await panel
+            .Locator(".dx-datagrid .dx-datagrid-rowsview, #ProcessSection, .process-area")
+            .First.IsVisibleAsync(new() { Timeout = 800 });
+
+        var validationScore = filledCriticalFields + (processAreaReady ? 1 : 0);
+        var success = validationScore >= 2;
+
+        _logger.LogInformation(
+            "Step 13: Validation details -> {details}. ProcessAreaReady={ready}, Score={score}/4",
+            string.Join(" | ", details), processAreaReady, validationScore
+        );
+
+        return new ProcessingResult
+        {
+            Success = success,
+            Message = $"Form validation completed with score {validationScore}/4",
+            Data = new Dictionary<string, object>
+            {
+                { "criticalFieldsFilled", filledCriticalFields },
+                { "processAreaReady", processAreaReady },
+                { "details", details }
+            }
+        };
+    }
+    catch (Exception ex)
+    {
+        return new ProcessingResult
+        {
+            Success = false,
+            Message = $"Final validation failed: {ex.Message}"
+        };
+    }
+}
+
+private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selectors)
+{
+    foreach (var sel in selectors)
     {
         try
         {
-            _logger.LogInformation("Step 13: Performing final form validation");
-            
-            // Check if critical planning fields are filled
-            var criticalFields = new[] { "#planJob_Size1", "#ItemPlanQuality", "#PlanFColor" };
-            var filledCriticalFields = 0;
-            
-            foreach (var selector in criticalFields)
+            var node = scope.Locator(sel).First;
+            if (await node.IsVisibleAsync(new() { Timeout = 400 }))
             {
-                try
+                // Prefer .value for inputs; fallback to textContent
+                var tag = await node.EvaluateAsync<string>("el => el.tagName?.toLowerCase()");
+                if (tag == "input" || tag == "textarea")
                 {
-                    var element = await _page!.QuerySelectorAsync(selector);
-                    if (element != null)
-                    {
-                        var isVisible = await element.IsVisibleAsync();
-                        if (isVisible)
-                        {
-                            var value = await element.EvaluateAsync<string>("el => el.value || el.textContent || ''");
-                            if (!string.IsNullOrWhiteSpace(value))
-                            {
-                                filledCriticalFields++;
-                            }
-                        }
-                    }
+                    var v = await node.EvaluateAsync<string>("el => (el as HTMLInputElement).value ?? ''");
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
                 }
-                catch (Exception ex)
+
+                // DevExtreme often keeps the text in the same .dx-texteditor-input (text node) or display span
+                var txt = await node.EvaluateAsync<string>("el => el.textContent?.trim() || ''");
+                if (!string.IsNullOrWhiteSpace(txt)) return txt;
+            }
+        }
+        catch { /* try next selector */ }
+    }
+    return string.Empty;
+}
+
+
+/// <summary> Locate the Planning panel by anchoring from the "Show Cost" button. </summary>
+    private async Task<ILocator> FindPlanningPanelAsync()
+    {
+        _logger.LogInformation("Step 14: Locating process table after Trimming block completion");
+        
+        // Target the specific process table (appears after Trimming block is filled)
+        var processTableSelectors = new[]
+        {
+            "#GridOperation", // The specific grid ID for operations/processes
+            ".dx-datagrid:has(.dx-datagrid-headers):has(*:has-text('Process Name'))", // DataGrid with Process Name header
+            ".dx-datagrid-container:has(*:has-text('Process Name'))", // Container with Process Name
+            ".dx-datagrid:has(.dx-datagrid-filter-row)", // DataGrid with filter row
+            "table:has(th:has-text('Process Name'))", // HTML table with Process Name header
+            ".dx-datagrid-content:has(*:has-text('Process'))" // DataGrid content with Process text
+        };
+        
+        ILocator? processPanel = null;
+        string usedSelector = "";
+        
+        // Wait a moment for the table to appear after Trimming completion
+        await Task.Delay(1000);
+        
+        // Try each selector to find the process table
+        for (int i = 0; i < processTableSelectors.Length; i++)
+        {
+            try
+            {
+                var candidateTable = _page!.Locator(processTableSelectors[i]).First;
+                await candidateTable.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 });
+                
+                // Verify this table has the expected structure (Process Name column and filter row)
+                var hasProcessNameHeader = await candidateTable.Locator("*:has-text('Process Name')").IsVisibleAsync();
+                var hasFilterRow = await candidateTable.Locator(".dx-datagrid-filter-row, .dx-header-filter").IsVisibleAsync();
+                
+                if (hasProcessNameHeader)
                 {
-                    _logger.LogWarning("Error checking critical field {selector}: {error}", selector, ex.Message);
+                    processPanel = candidateTable;
+                    usedSelector = processTableSelectors[i];
+                    _logger.LogInformation("Step 14: Found process table using selector '{selector}', hasFilterRow: {hasFilterRow}", usedSelector, hasFilterRow);
+                    break;
+                }
+                else
+                {
+                    _logger.LogDebug("Step 14: Table found but no Process Name header with selector '{selector}'", processTableSelectors[i]);
                 }
             }
-
-            // Look for process addition area to ensure we're ready for Step 14
-            var processArea = await _page!.QuerySelectorAsync(".dx-texteditor-container, #ProcessSection, .process-area");
-            var processAreaReady = processArea != null;
-
-            var validationScore = filledCriticalFields + (processAreaReady ? 1 : 0);
-            var success = validationScore >= 2; // At least 2 critical elements ready
-
-            return new ProcessingResult
+            catch
             {
-                Success = success,
-                Message = $"Form validation completed with score {validationScore}/4",
-                Data = new Dictionary<string, object>
+                _logger.LogDebug("Step 14: Process table selector '{selector}' failed, trying next", processTableSelectors[i]);
+                continue;
+            }
+        }
+        
+        if (processPanel == null)
+        {
+            _logger.LogWarning("Step 14: No process table found, using page body as scope");
+            processPanel = _page!.Locator("body");
+        }
+        
+        return processPanel;
+    }
+
+    /// <summary>
+    /// Finds Process Name filter input by deterministic header mapping within the scoped panel
+    /// </summary>
+    private async Task<(ILocator leftGrid, ILocator processFilterInput, int colIndex)> FindProcessFilterInPanelAsync(ILocator panel)
+    {
+        // Find the left grid (available processes) within the panel
+        var grids = panel.Locator(".dx-datagrid");
+        var leftGrid = grids.First;
+        await leftGrid.WaitForAsync(new() { State = WaitForSelectorState.Visible });
+        
+        _logger.LogInformation("Step 14: Located left grid within planning panel");
+        
+        // Read header row cells to find "Process Name" column
+        var headerCells = leftGrid.Locator(".dx-datagrid-headers .dx-header-row td");
+        var headerCount = await headerCells.CountAsync();
+        
+        int processNameColumnIndex = -1;
+        for (int i = 0; i < headerCount; i++)
+        {
+            var cellText = await headerCells.Nth(i).InnerTextAsync();
+            if (cellText.ToLower().Contains("process name"))
+            {
+                processNameColumnIndex = i + 1; // 1-based index
+                _logger.LogInformation("Step 14: Found 'Process Name' column at index {index}", processNameColumnIndex);
+                break;
+            }
+        }
+        
+        if (processNameColumnIndex == -1)
+        {
+            throw new InvalidOperationException("Could not locate 'Process Name' column in grid headers");
+        }
+        
+        // Target the corresponding filter row cell using the computed index
+        var filterCell = leftGrid.Locator($".dx-datagrid-headers .dx-datagrid-filter-row td:nth-child({processNameColumnIndex})");
+        var filterInput = filterCell.Locator("input.dx-texteditor-input").First;
+        await filterInput.WaitForAsync(new() { State = WaitForSelectorState.Visible });
+        
+        _logger.LogInformation("Step 14: Located Process Name filter input at column {index}", processNameColumnIndex);
+        
+        return (leftGrid, filterInput, processNameColumnIndex);
+    }
+
+    /// <summary>
+    /// Adds a process using panel-scoped interactions and click escalation without DOM mutations
+    /// </summary>
+    private async Task AddProcessToPanelAsync(ILocator panel, string processName, bool required = false)
+    {
+        _logger.LogInformation("Step 14: Adding process '{processName}' using simplified table approach", processName);
+
+        try
+        {
+            // Wait for Planning panel to be ready first
+            await _page!.WaitForTimeoutAsync(3000);
+            
+            // 1. Identify the Left Grid Table (Source Process Table)
+            var processTableLeft = _page!
+                .Locator("table")
+                .Filter(new() { HasText = "Process Name" })
+                .First;
+            
+            await processTableLeft.WaitForAsync(new() { Timeout = 10000 });
+            _logger.LogInformation("Step 14: Found left process table for '{processName}'", processName);
+
+            // 2. Locate the Search Box for "Process Name"
+            var searchInput = processTableLeft
+                .Locator("tr").Nth(1)              // Header filter row
+                .Locator("td").Nth(1)              // Column 2 = Process Name
+                .Locator("input.dx-texteditor-input");
+            
+            await searchInput.WaitForAsync(new() { Timeout = 5000 });
+            
+            // Clear and fill search
+            await searchInput.ClickAsync();
+            await searchInput.FillAsync(processName);
+            await _page!.WaitForTimeoutAsync(500); // Allow dropdown render delay
+            _logger.LogInformation("Step 14: Typed '{processName}' in Process Name filter", processName);
+
+            // 3. Wait for Row to Appear with Text "_Cutting" 
+            await _page!.WaitForTimeoutAsync(500); // Add delay after typing as recommended
+            
+            // Wait for cell containing the process name to appear
+            var processCell = _page!.Locator($"td:has-text('{processName}')").First;
+            await processCell.WaitForAsync(new() { Timeout = 8000 });
+            _logger.LogInformation("Step 14: Found cell containing '{processName}'", processName);
+
+            // 4. Navigate to Parent Row
+            var matchingRow = processCell.Locator("xpath=./ancestor::tr").First;
+            _logger.LogInformation("Step 14: Located parent row for '{processName}'", processName);
+
+            // 5. Find "+" Inside That Row (First Cell) - exact class match
+            var plusButton = matchingRow.Locator("div.fa.fa-plus.customgridbtn").First;
+            
+            try 
+            {
+                await plusButton.WaitForAsync(new() { Timeout = 5000 });
+                _logger.LogInformation("Step 14: Found plus button for '{processName}'", processName);
+                
+                // Scroll into view first
+                await plusButton.ScrollIntoViewIfNeededAsync();
+                
+                // Click the "+"
+                await plusButton.ClickAsync();
+                _logger.LogInformation("Step 14: Clicked '+' button for process '{processName}'", processName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Step 14: Normal click failed, trying fallbacks for '{processName}': {error}", processName, ex.Message);
+                
+                // Fallback: Force click
+                try 
                 {
-                    { "criticalFieldsFilled", filledCriticalFields },
-                    { "processAreaReady", processAreaReady },
-                    { "validationScore", validationScore }
+                    await plusButton.ClickAsync(new() { Force = true });
+                    _logger.LogInformation("Step 14: Force clicked '+' button for process '{processName}'", processName);
                 }
-            };
+                catch (Exception ex2)
+                {
+                    _logger.LogWarning("Step 14: Force click failed, trying XPath approach for '{processName}': {error}", processName, ex2.Message);
+                    
+                    // Alternative full XPath approach
+                    var xpathPlusButton = _page!.Locator($"xpath=//tr[.//td[contains(text(), '{processName}')]]//div[contains(@class, 'fa-plus')]").First;
+                    await xpathPlusButton.ClickAsync();
+                    _logger.LogInformation("Step 14: XPath clicked '+' button for process '{processName}'", processName);
+                }
+            }
+            
+            // 5. Verify the Process Was Added to the Right Grid (optional)
+            try
+            {
+                var rightTable = _page!
+                    .Locator("table")
+                    .Filter(new() { HasText = "Delete" }); // Right table always has "Delete" column
+
+                await rightTable.Locator("tr").Filter(new() { HasText = processName }).WaitForAsync(new() { Timeout = 5000 });
+                _logger.LogInformation("Step 14: Verified '{processName}' was added to right grid", processName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogInformation("Step 14: Could not verify '{processName}' in right grid (may be expected): {error}", processName, ex.Message);
+            }
+            
+            // 5. Verify process was added (optional verification)
+            _logger.LogInformation("Step 14: Process '{processName}' successfully added using simplified table approach", processName);
         }
         catch (Exception ex)
         {
-            return new ProcessingResult
+            _logger.LogError(ex, "Step 14: Simplified table approach failed for process '{processName}'", processName);
+            if (required) throw;
+        }
+    }
+    
+    /// <summary>
+    /// Get the row index for a process in the table to match with fixed overlay buttons
+    /// </summary>
+    private async Task<int> GetRowIndexForProcess(ILocator panel, string processName)
+    {
+        try
+        {
+            var allRows = panel.Locator(".dx-datagrid-rowsview .dx-row.dx-data-row");
+            var rowCount = await allRows.CountAsync();
+            
+            for (int i = 0; i < rowCount; i++)
             {
-                Success = false,
-                Message = $"Final validation failed: {ex.Message}"
-            };
+                var rowText = await allRows.Nth(i).InnerTextAsync();
+                if (rowText.Contains(processName, StringComparison.OrdinalIgnoreCase) || 
+                    rowText.Contains("_" + processName, StringComparison.OrdinalIgnoreCase) ||
+                    (processName.StartsWith("_") && rowText.Contains(processName.Substring(1), StringComparison.OrdinalIgnoreCase)))
+                {
+                    _logger.LogInformation("Step 14: Found process '{processName}' at row index {index}", processName, i);
+                    return i;
+                }
+            }
+            
+            _logger.LogWarning("Step 14: Process '{processName}' not found in any row", processName);
+            return -1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Step 14: Error getting row index for process '{processName}'", processName);
+            return -1;
         }
     }
 
@@ -1340,11 +1639,7 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
     {
         try
         {
-            _logger.LogInformation("Step 14: Starting dynamic process addition based on content type");
-            
-            // Get ERP data to determine which processes to add
-            var erpData = GetCurrentErpDataFromContext(); // You'll need to implement this method
-            var processSelection = await GetProcessSelectionForJob(erpData);
+            _logger.LogInformation("Step 14: Starting panel-scoped process addition (no DOM mutations)");
             
             var addedProcesses = new List<string>();
             var errors = new List<string>();
@@ -1352,64 +1647,49 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
             // Wait for process area to be loaded
             await _page!.WaitForTimeoutAsync(2000);
             
-            // Add required processes first
-            foreach (var process in processSelection.RequiredProcesses)
+            // Step 1: Locate the Planning panel using Show Cost button as sentinel
+            var planningPanel = await FindPlanningPanelAsync();
+            _logger.LogInformation("Step 14: Planning panel located and scoped");
+            
+            // Define processes to add with priority (using exact search terms)
+            var processesToAdd = new[]
             {
-                var result = await SearchAndAddProcess(process.Name, true);
-                if (result.Success)
-                {
-                    addedProcesses.Add($"{process.Name} (Required)");
+                ("_Cutting", true),       // Search for _Cutting as specified
+                ("F/B Printing", true)    // Search for F/B Printing as specified
+            };
+            
+            // Add processes using the new panel-scoped method (NO DOM MUTATIONS)
+            foreach (var (name, required) in processesToAdd)
+            {
+                try 
+                { 
+                    await AddProcessToPanelAsync(planningPanel, name, required);
+                    addedProcesses.Add($"{name} {(required ? "(Required)" : "(Optional)")}");
                 }
-                else
+                catch (Exception ex)
                 {
-                    errors.Add($"Failed to add required process '{process.Name}': {result.Message}");
+                    if (required) 
+                    {
+                        errors.Add($"Failed to add required process '{name}': {ex.Message}");
+                        _logger.LogError(ex, "Step 14: Required process '{processName}' failed to add", name);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Step 14: Optional process '{name}' could not be added: {msg}", name, ex.Message);
+                    }
                 }
-                
-                await _page.WaitForTimeoutAsync(1000); // Delay between processes
             }
             
-            // Add content-based processes
-            foreach (var process in processSelection.ContentBasedProcesses)
-            {
-                var result = await SearchAndAddProcess(process.Name, false);
-                if (result.Success)
-                {
-                    addedProcesses.Add($"{process.Name} (Content-based)");
-                }
-                else
-                {
-                    _logger.LogWarning("Could not add content-based process '{processName}': {error}", process.Name, result.Message);
-                }
-                
-                await _page.WaitForTimeoutAsync(1000); // Delay between processes
-            }
-            
-            // Add optional processes (limit to prevent overloading)
-            foreach (var process in processSelection.OptionalProcesses.Take(2))
-            {
-                var result = await SearchAndAddProcess(process.Name, false);
-                if (result.Success)
-                {
-                    addedProcesses.Add($"{process.Name} (Optional)");
-                }
-                else
-                {
-                    _logger.LogWarning("Could not add optional process '{processName}': {error}", process.Name, result.Message);
-                }
-                
-                await _page.WaitForTimeoutAsync(1000); // Delay between processes
-            }
-            
-            var success = addedProcesses.Count > 0;
+            var success = addedProcesses.Count > 0 || !processesToAdd.Any(p => p.Item2);
             var message = success 
-                ? $"Successfully added {addedProcesses.Count} processes: {string.Join(", ", addedProcesses)}"
-                : "No processes were added";
-                
+                ? $"Step 14: Panel-scoped process addition completed. Added {addedProcesses.Count} processes: {string.Join(", ", addedProcesses)}"
+                : "Step 14: Process addition failed - no processes were added";
+
             if (errors.Any())
             {
-                message += $". Errors: {string.Join(", ", errors)}";
+                message += $" Errors: {string.Join(", ", errors)}";
             }
-            
+
             return new ProcessingResult
             {
                 Success = success,
@@ -1418,17 +1698,18 @@ public class ErpEstimationProcessor : IErpEstimationProcessor, IDisposable
                 {
                     { "addedProcesses", addedProcesses },
                     { "errors", errors },
-                    { "totalProcessesAdded", addedProcesses.Count }
-                }
+                    { "strategy", "panel-scoped-no-mutations" }
+                },
+                Errors = errors.Any() ? errors : null
             };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Step 14: Error in dynamic process addition");
+            _logger.LogError(ex, "Step 14: Error in panel-scoped process addition");
             return new ProcessingResult
             {
                 Success = false,
-                Message = $"Process addition failed: {ex.Message}",
+                Message = $"Step 14: Panel-scoped process addition failed: {ex.Message}",
                 Errors = new List<string> { ex.ToString() }
             };
         }

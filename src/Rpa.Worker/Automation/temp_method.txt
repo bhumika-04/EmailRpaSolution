@@ -1,0 +1,254 @@
+    private async Task AddProcessToPanelAsync(ILocator panel, string processName, bool required = false)
+    {
+        _logger.LogInformation("Step 14: Filtering for process '{processName}' using exact search input", processName);
+        
+        // Try multiple search input selectors starting with the most specific
+        var searchInputSelectors = new[]
+        {
+            "input.dx-texteditor-input[type='text'][role='textbox']", // Your specified selector simplified
+            "input.dx-texteditor-input[type='text']", // More general
+            ".dx-datagrid .dx-texteditor-input", // Grid-specific input
+            "input.dx-texteditor-input" // Most general
+        };
+        
+        ILocator? searchInput = null;
+        string usedSelector = "";
+        
+        // Try to find a working search input
+        for (int i = 0; i < searchInputSelectors.Length; i++)
+        {
+            try
+            {
+                var candidateInput = panel.Locator(searchInputSelectors[i]).First;
+                await candidateInput.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 });
+                searchInput = candidateInput;
+                usedSelector = searchInputSelectors[i];
+                _logger.LogInformation("Step 14: Found search input with selector '{selector}'", usedSelector);
+                break;
+            }
+            catch
+            {
+                _logger.LogDebug("Step 14: Selector '{selector}' failed, trying next", searchInputSelectors[i]);
+                continue;
+            }
+        }
+
+        if (searchInput != null)
+        {
+            try
+            {
+                // Focus, clear, and type the process name using the found input
+                await searchInput.FocusAsync();
+                await searchInput.FillAsync("");
+                await Task.Delay(500); // Allow clear to complete
+                await searchInput.FillAsync(processName);
+                await searchInput.PressAsync("Enter");
+                await Task.Delay(2000); // Wait for filter results to load
+                _logger.LogInformation("Step 14: Successfully searched for '{processName}' using selector '{selector}'", processName, usedSelector);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Step 14: Search input interaction failed: {error}", ex.Message);
+                searchInput = null; // Force fallback
+            }
+        
+        // Fallback to grid-based search if direct search input not found
+        if (searchInput == null)
+        {
+            _logger.LogWarning("Step 14: No search input found, falling back to grid-based search");
+            
+            try
+            {
+                var (fallbackGrid, filterInput, _) = await FindProcessFilterInPanelAsync(panel);
+                await filterInput.FocusAsync();
+                await filterInput.FillAsync("");
+                await filterInput.FillAsync(processName);
+                await filterInput.PressAsync("Enter");
+                await Task.Delay(1500); // Wait for filter results
+                _logger.LogInformation("Step 14: Used fallback grid-based search for '{processName}'", processName);
+            }
+            catch (Exception fallbackEx)
+            {
+                _logger.LogError(fallbackEx, "Step 14: Both search methods failed for '{processName}'", processName);
+                throw;
+            }
+        }
+        
+        // Find matching row in the left grid (first DevExtreme DataGrid)
+        var leftGrid = panel.Locator(".dx-datagrid").First;
+        var rowsView = leftGrid.Locator(".dx-datagrid-rowsview");
+        var matchingRow = rowsView.Locator(".dx-row.dx-data-row").Filter(new() { HasTextString = processName });
+        
+        try
+        {
+            await matchingRow.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 6000 });
+            _logger.LogInformation("Step 14: Found process row for '{processName}' after search", processName);
+        }
+        catch
+        {
+            // For processes that start with underscore, search without it first, then try with it
+            if (processName.StartsWith("_"))
+            {
+                var baseProcessName = processName.Substring(1); // Remove underscore
+                _logger.LogInformation("Step 14: Original search failed, trying without underscore: '{baseProcessName}'", baseProcessName);
+                matchingRow = rowsView.Locator(".dx-row.dx-data-row").Filter(new() { HasTextString = baseProcessName });
+                try
+                {
+                    await matchingRow.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 6000 });
+                    _logger.LogInformation("Step 14: Found process row for base name '{baseProcessName}'", baseProcessName);
+                }
+                catch
+                {
+                    // Try the original with underscore if base name didn't work
+                    _logger.LogInformation("Step 14: Base name failed, trying original '{processName}'", processName);
+                    matchingRow = rowsView.Locator(".dx-row.dx-data-row").Filter(new() { HasTextString = processName });
+                    await matchingRow.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 6000 });
+                }
+            }
+            else
+            {
+                // Try underscore variant for non-underscore processes
+                _logger.LogInformation("Step 14: Original search failed, trying underscore variant '_{processName}'", processName);
+                matchingRow = rowsView.Locator(".dx-row.dx-data-row").Filter(new() { HasTextString = "_" + processName });
+                await matchingRow.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 6000 });
+            }
+        }
+        
+        // Check idempotency - see if already in right grid
+        var rightGrid = panel.Locator(".dx-datagrid").Nth(1);
+        var existingInRight = rightGrid.Locator(".dx-datagrid-rowsview .dx-row").Filter(new() { HasTextString = processName });
+        
+        try
+        {
+            if (await existingInRight.First.IsVisibleAsync())
+            {
+                _logger.LogInformation("Step 14: '{processName}' already present on right grid. Skipping add.", processName);
+                return;
+            }
+        }
+        catch 
+        {
+            // Not found in right grid - proceed with adding
+        }
+        
+        // Scroll the row to center within grid (allowed - doesn't hide anything)
+        await matchingRow.First.ScrollIntoViewIfNeededAsync();
+        
+        // Try multiple plus button selectors starting with your exact specification
+        var plusButtonSelectors = new[]
+        {
+            "div.fa.fa-plus.customgridbtn", // Your exact selector: <div class="fa fa-plus customgridbtn"></div>
+            ".fa.fa-plus.customgridbtn", // Without specifying div
+            ".fa-plus.customgridbtn", // Simplified
+            ".customgridbtn", // Most general custom grid button
+            "td[aria-colindex='1'] *[class*='plus']", // First column with plus
+            "td:first-child *[class*='plus']" // First cell with plus
+        };
+        
+        ILocator? plusButton = null;
+        string usedPlusSelector = "";
+        
+        // Try to find a working plus button
+        for (int i = 0; i < plusButtonSelectors.Length; i++)
+        {
+            try
+            {
+                var candidateButton = matchingRow.First.Locator(plusButtonSelectors[i]);
+                await candidateButton.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 });
+                plusButton = candidateButton;
+                usedPlusSelector = plusButtonSelectors[i];
+                _logger.LogInformation("Step 14: Located plus button with selector '{selector}' for '{processName}'", usedPlusSelector, processName);
+                break;
+            }
+            catch
+            {
+                _logger.LogDebug("Step 14: Plus button selector '{selector}' failed, trying next", plusButtonSelectors[i]);
+                continue;
+            }
+        }
+        
+        if (plusButton == null)
+        {
+            _logger.LogError("Step 14: Could not locate any plus button for '{processName}'", processName);
+            throw new InvalidOperationException($"Could not locate plus button for process '{processName}'");
+        }
+        
+        // Click escalation strategy: normal → JS click → synthetic events
+        bool clicked = false;
+        
+        // Strategy 1: Normal Playwright click
+        try 
+        {
+            await plusButton.ClickAsync(new() { Timeout = 3000 });
+            _logger.LogInformation("Step 14: Normal click succeeded for '{processName}'", processName);
+            clicked = true;
+        }
+        catch (Exception ex) when (ex.Message.Contains("intercept"))
+        {
+            _logger.LogInformation("Step 14: Normal click intercepted for '{processName}', trying JS click", processName);
+        }
+        
+        // Strategy 2: JavaScript click (no DOM mutations)
+        if (!clicked)
+        {
+            try
+            {
+                var buttonHandle = await plusButton.ElementHandleAsync();
+                await buttonHandle.EvaluateAsync("el => el.click()");
+                _logger.LogInformation("Step 14: JS click succeeded for '{processName}'", processName);
+                clicked = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogInformation("Step 14: JS click failed for '{processName}': {error}", processName, ex.Message);
+            }
+        }
+        
+        // Strategy 3: Synthetic pointer events (within panel scope)
+        if (!clicked)
+        {
+            try
+            {
+                var buttonHandle = await plusButton.ElementHandleAsync();
+                await buttonHandle.EvaluateAsync(@"el => {
+                    const rect = el.getBoundingClientRect();
+                    const centerX = rect.left + rect.width / 2;
+                    const centerY = rect.top + rect.height / 2;
+                    
+                    ['pointerenter', 'mouseover', 'pointermove', 'mousedown', 'mouseup', 'click'].forEach(eventType => {
+                        el.dispatchEvent(new MouseEvent(eventType, {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: centerX,
+                            clientY: centerY
+                        }));
+                    });
+                }");
+                _logger.LogInformation("Step 14: Synthetic events dispatched for '{processName}'", processName);
+                clicked = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Step 14: All click strategies failed for '{processName}': {error}", processName, ex.Message);
+                if (required) throw;
+                return;
+            }
+        }
+        
+        // Verify the process appears in the right grid
+        await Task.Delay(2000); // Allow time for the addition
+        
+        try
+        {
+            var rightGrid = panel.Locator(".dx-datagrid").Nth(1); // Right grid is second DataGrid
+            var newRowInRight = rightGrid.Locator(".dx-datagrid-rowsview .dx-row").Filter(new() { HasTextString = processName });
+            await newRowInRight.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 6000 });
+            _logger.LogInformation("Step 14: Added process '{processName}' to right grid successfully", processName);
+        }
+        catch
+        {
+            _logger.LogWarning("Step 14: Could not verify '{processName}' was added to right grid", processName);
+            if (required) throw;
+        }
+    }

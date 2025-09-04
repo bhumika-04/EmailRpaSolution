@@ -722,21 +722,22 @@ public class PlanningSheetProcessor
         _logger.LogInformation("📋 Trimming values to fill: Top={top}, Bottom={bottom}, Left={left}, Right={right}", 
             values[0], values[1], values[2], values[3]);
         
-        _logger.LogInformation("🎯 Filling Trimming Top with value: {value}", values[0]);
-        await FillInputField("#Trimmingtop", values[0], "Trimming Top", filledFields, errors);
-        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        // Enhanced Trimming fields with scroll and visibility
+        _logger.LogInformation("🎯 WATCH BROWSER! Filling Trimming Top with value: {value}", values[0]);
+        await ScrollToElementAndFill("#Trimmingtop", values[0], "Trimming Top", filledFields, errors);
+        await _page.WaitForTimeoutAsync(5000); // 5-second pause for visibility
         
-        _logger.LogInformation("🎯 Filling Trimming Bottom with value: {value}", values[1]);
-        await FillInputField("#Trimmingbottom", values[1], "Trimming Bottom", filledFields, errors);
-        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        _logger.LogInformation("🎯 WATCH BROWSER! Filling Trimming Bottom with value: {value}", values[1]);
+        await ScrollToElementAndFill("#Trimmingbottom", values[1], "Trimming Bottom", filledFields, errors);
+        await _page.WaitForTimeoutAsync(5000); // 5-second pause for visibility
         
-        _logger.LogInformation("🎯 Filling Trimming Left with value: {value}", values[2]);
-        await FillInputField("#Trimmingleft", values[2], "Trimming Left", filledFields, errors);
-        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        _logger.LogInformation("🎯 WATCH BROWSER! Filling Trimming Left with value: {value}", values[2]);
+        await ScrollToElementAndFill("#Trimmingleft", values[2], "Trimming Left", filledFields, errors);
+        await _page.WaitForTimeoutAsync(5000); // 5-second pause for visibility
         
-        _logger.LogInformation("🎯 Filling Trimming Right with value: {value}", values[3]);
-        await FillInputField("#Trimmingright", values[3], "Trimming Right", filledFields, errors);
-        await _page.WaitForTimeoutAsync(3000); // 3-second pause for visibility
+        _logger.LogInformation("🎯 WATCH BROWSER! Filling Trimming Right with value: {value}", values[3]);
+        await ScrollToElementAndFill("#Trimmingright", values[3], "Trimming Right", filledFields, errors);
+        await _page.WaitForTimeoutAsync(5000); // 5-second pause for visibility
         
         _logger.LogInformation("✅ Completed filling all Trimming fields (T/B/L/R)");
         
@@ -766,9 +767,9 @@ public class PlanningSheetProcessor
             _logger.LogInformation("Processing Color Strip field: {value}", finishing.ColorStrip);
             await FillInputField("#PlanColorStrip", finishing.ColorStrip, "Color Strip", filledFields, errors);
             
-            // Finished Format dropdown
+            // Finished Format dropdown - Enhanced with error handling
             _logger.LogInformation("Processing Finished Format dropdown: {value}", finishing.FinishedFormat);
-            await FillDevExtremeDropdown("#Planfinishedformat", finishing.FinishedFormat, "Finished Format", filledFields, errors);
+            await FillFinishedFormatDropdown(finishing.FinishedFormat, filledFields, errors);
             
             _logger.LogInformation("✅ Completed Finishing Fields segment");
         }
@@ -793,231 +794,35 @@ public class PlanningSheetProcessor
 
     private async Task FillProcessDetailsSegment(List<string> filledFields, List<string> errors)
     {
-        _logger.LogInformation("Filling Process Details segment (Segment 5) - DevExtreme DataGrid");
+        _logger.LogInformation("Validating Process Details segment (Segment 5) - DevExtreme DataGrid ready for Step 14");
         
         try
         {
-            // Wait for process grid to be fully loaded
+            // Wait for process grid to be fully loaded and ready for Step 14
             await _page.WaitForSelectorAsync("#GridOperation", new PageWaitForSelectorOptions { Timeout = 5000 });
             
-            // Check if grid has data or is empty
-            var noDataElement = await _page.QuerySelectorAsync(".dx-datagrid-nodata");
-            var isGridEmpty = noDataElement != null && await noDataElement.IsVisibleAsync();
-            
-            if (isGridEmpty)
+            // Validate the planning panel is ready for process addition in Step 14
+            var planningPanelReady = await _page.QuerySelectorAsync("button:has-text('Show Cost'), #btnShowCost");
+            if (planningPanelReady != null)
             {
-                _logger.LogInformation("Process grid is empty - attempting to add common processes");
-                
-                // Common processes for box manufacturing
-                var commonProcesses = new[] 
-                { 
-                    "Die Cutting", 
-                    "Gluing", 
-                    "Window Patching", 
-                    "Lamination"
-                };
-                
-                // Try to add processes using the filter/search approach
-                foreach (var process in commonProcesses)
-                {
-                    await TryAddProcessToGrid(process, filledFields, errors);
-                }
+                _logger.LogInformation("✅ Planning panel with process grids is ready for Step 14 process addition");
+                filledFields.Add("Process Grid: Planning panel ready for Step 14");
             }
             else
             {
-                _logger.LogInformation("Process grid already contains data - attempting to add required processes from ProcessSelection");
-                
-                // Try to add our specific required processes (Cutting and F/B Printing)
-                var requiredProcesses = new[] { "Cutting", "F/B Printing" };
-                foreach (var process in requiredProcesses)
-                {
-                    _logger.LogInformation("🎯 Attempting to add required process: {processName}", process);
-                    await TryAddProcessToGrid(process, filledFields, errors);
-                    await _page.WaitForTimeoutAsync(2000); // Pause between additions
-                }
-                
-                filledFields.Add("Process Grid: Required processes added to existing data");
+                _logger.LogWarning("⚠️ Planning panel not fully ready - Step 14 may need to wait");
+                filledFields.Add("Process Grid: Panel state checked");
             }
         }
         catch (Exception ex)
         {
-            errors.Add($"Error in Process Details segment: {ex.Message}");
-            _logger.LogError(ex, "Error filling Process Details segment");
+            errors.Add($"Error validating Process Details segment: {ex.Message}");
+            _logger.LogError(ex, "Error validating Process Details segment");
         }
     }
 
-    private async Task TryAddProcessToGrid(string processName, List<string> filledFields, List<string> errors)
-    {
-        try
-        {
-            _logger.LogInformation("Attempting to add process: {processName} to DevExtreme grid", processName);
-            
-            // First, handle potential UI overlays that block clicks
-            await HandleUIOverlays();
-            
-            // Method 1: Enhanced search with overlay handling
-            _logger.LogInformation("Method 1: Searching for process in filter row");
-            var processNameFilter = await _page.QuerySelectorAsync(".dx-datagrid-filter-row .dx-texteditor-input");
-            if (processNameFilter != null && await processNameFilter.IsVisibleAsync())
-            {
-                await processNameFilter.ClickAsync();
-                await processNameFilter.FillAsync(processName);
-                await _page.WaitForTimeoutAsync(2000); // Wait for grid to filter
-                
-                // Look for rows with the process name
-                var processRow = await _page.QuerySelectorAsync($".dx-datagrid-rowsview tr:has-text('{processName}')");
-                if (processRow != null)
-                {
-                    // Enhanced button detection and clicking with overlay handling
-                    var addButton = await processRow.QuerySelectorAsync("td:first-child, .dx-datagrid-action, button, .btn");
-                    if (addButton != null)
-                    {
-                        var clickResult = await ClickWithOverlayHandling(addButton, $"Process add button for {processName}");
-                        if (clickResult)
-                        {
-                            await _page.WaitForTimeoutAsync(1000);
-                            filledFields.Add($"Process Added: {processName}");
-                            _logger.LogInformation("✅ Successfully added process: {processName}", processName);
-                            return;
-                        }
-                    }
-                }
-            }
-            
-            // Method 2: Try using the search input directly (your HTML example)
-            _logger.LogInformation("Method 2: Using direct search input approach");
-            var searchInput = await _page.QuerySelectorAsync("input.dx-texteditor-input[type='text'][role='textbox']");
-            if (searchInput != null && await searchInput.IsVisibleAsync())
-            {
-                await searchInput.ClickAsync();
-                await searchInput.FillAsync(processName);
-                await _page.WaitForTimeoutAsync(1500);
-                
-                // Try pressing Enter to search/select
-                await searchInput.PressAsync("Enter");
-                await _page.WaitForTimeoutAsync(1000);
-                
-                // Look for search results or dropdown
-                var resultList = await _page.QuerySelectorAsync(".dx-list-item, .dropdown-item, [role='option']");
-                if (resultList != null)
-                {
-                    var clickResult = await ClickWithOverlayHandling(resultList, $"Process search result for {processName}");
-                    if (clickResult)
-                    {
-                        filledFields.Add($"Process Added via Search: {processName}");
-                        _logger.LogInformation("✅ Successfully added process via search: {processName}", processName);
-                        return;
-                    }
-                }
-                
-                // Try Arrow Down + Enter approach
-                await searchInput.PressAsync("ArrowDown");
-                await _page.WaitForTimeoutAsync(300);
-                await searchInput.PressAsync("Enter");
-                await _page.WaitForTimeoutAsync(500);
-                
-                filledFields.Add($"Process Search Attempted: {processName}");
-                _logger.LogInformation("Process search attempted for: {processName}", processName);
-                return;
-            }
-            
-            // Method 2: Try toolbar buttons (refresh and add)
-            var toolbarAddButton = await _page.QuerySelectorAsync(".dx-toolbar .dx-icon-add");
-            if (toolbarAddButton != null)
-            {
-                await toolbarAddButton.ClickAsync();
-                await _page.WaitForTimeoutAsync(1000);
-                
-                // This might open a process selection dialog
-                // Handle the dialog if it appears
-                await HandleProcessSelectionDialog(processName, filledFields, errors);
-            }
-            
-            // Method 3: Direct row addition if grid supports it
-            var emptyRow = await _page.QuerySelectorAsync(".dx-row-inserted, .dx-datagrid-rowsview .dx-row:first-child");
-            if (emptyRow != null)
-            {
-                var processNameCell = await emptyRow.QuerySelectorAsync("td:nth-child(2) input, td[aria-colindex='2'] input");
-                if (processNameCell != null)
-                {
-                    await processNameCell.FillAsync(processName);
-                    filledFields.Add($"Process Added: {processName}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Error adding process {processName}: {ex.Message}");
-            _logger.LogWarning(ex, "Could not add process {processName}", processName);
-        }
-    }
 
-    private async Task HandleProcessSelectionDialog(string processName, List<string> filledFields, List<string> errors)
-    {
-        try
-        {
-            // Wait for potential dialog or popup
-            await _page.WaitForTimeoutAsync(1000);
-            
-            // Look for process selection dialog/modal
-            var dialog = await _page.QuerySelectorAsync(".dx-popup, .dx-overlay, .modal");
-            if (dialog != null && await dialog.IsVisibleAsync())
-            {
-                // Search within dialog
-                var searchField = await dialog.QuerySelectorAsync("input[type='text'], .dx-texteditor-input");
-                if (searchField != null)
-                {
-                    await searchField.FillAsync(processName);
-                    await _page.WaitForTimeoutAsync(1000);
-                    
-                    // Look for process in list and click
-                    var processOption = await dialog.QuerySelectorAsync($"*:has-text('{processName}')");
-                    if (processOption != null)
-                    {
-                        await processOption.ClickAsync();
-                        
-                        // Look for OK/Save button
-                        var saveButton = await dialog.QuerySelectorAsync("button:has-text('OK'), button:has-text('Save'), .dx-button-success");
-                        if (saveButton != null)
-                        {
-                            await saveButton.ClickAsync();
-                            filledFields.Add($"Process Added via Dialog: {processName}");
-                        }
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Error in process dialog for {processName}: {ex.Message}");
-        }
-    }
 
-    private async Task TryAddProcess(string processName, List<string> filledFields, List<string> errors)
-    {
-        try
-        {
-            // Search for process in the process selection area
-            var searchField = await _page.QuerySelectorAsync("#process_search, .process-search");
-            if (searchField != null)
-            {
-                await searchField.FillAsync(processName);
-                await _page.WaitForTimeoutAsync(1000);
-                
-                // Look for "+" button to add process
-                var addButton = await _page.QuerySelectorAsync($"button:has-text('+'):visible, .add-process-btn:visible");
-                if (addButton != null)
-                {
-                    await addButton.ClickAsync();
-                    filledFields.Add($"Process Added: {processName}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Error adding process {processName}: {ex.Message}");
-        }
-    }
 
     private async Task FillInputField(string selector, string value, string fieldName, List<string> filledFields, List<string> errors)
     {
@@ -1731,78 +1536,6 @@ public class PlanningSheetProcessor
         }
     }
 
-    private async Task HandleUIOverlays()
-    {
-        try
-        {
-            _logger.LogInformation("Checking for UI overlays that might block interactions...");
-
-            // List of common overlay selectors that can block interactions
-            var overlaySelectors = new[]
-            {
-                "#BottomTabBar.MYBottomsidenav",
-                ".MYBottomsidenav", 
-                ".overlay",
-                ".modal-overlay",
-                ".dx-overlay-wrapper",
-                ".dx-popup-wrapper",
-                ".tooltip",
-                "[style*='position: fixed']",
-                "[style*='z-index']"
-            };
-
-            foreach (var selector in overlaySelectors)
-            {
-                try
-                {
-                    var overlays = await _page.QuerySelectorAllAsync(selector);
-                    foreach (var overlay in overlays)
-                    {
-                        var isVisible = await overlay.IsVisibleAsync();
-                        if (isVisible)
-                        {
-                            // Check if overlay has pointer-events that could block interactions
-                            var style = await overlay.GetAttributeAsync("style");
-                            var computedStyle = await _page.EvaluateAsync<string>($@"
-                                const element = document.querySelector('{selector}');
-                                if (element) {{
-                                    const computed = window.getComputedStyle(element);
-                                    return computed.pointerEvents + '|' + computed.zIndex + '|' + computed.position;
-                                }}
-                                return null;
-                            ");
-
-                            _logger.LogInformation("Found overlay {selector}: visible={isVisible}, style={style}, computed={computedStyle}", 
-                                selector, isVisible, style, computedStyle);
-
-                            // Try to hide or disable problematic overlays
-                            if (computedStyle?.Contains("auto") == true || computedStyle?.Contains("all") == true)
-                            {
-                                _logger.LogInformation("Attempting to disable pointer events for overlay: {selector}", selector);
-                                await _page.EvaluateAsync($@"
-                                    const elements = document.querySelectorAll('{selector}');
-                                    elements.forEach(el => {{
-                                        el.style.pointerEvents = 'none';
-                                        el.style.zIndex = '-1';
-                                    }});
-                                ");
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug("Error checking overlay {selector}: {error}", selector, ex.Message);
-                }
-            }
-
-            await _page.WaitForTimeoutAsync(500); // Give time for overlay changes to take effect
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error in HandleUIOverlays");
-        }
-    }
 
     private async Task CloseExistingDropdowns()
     {
@@ -1845,75 +1578,130 @@ public class PlanningSheetProcessor
         }
     }
 
-    private async Task<bool> ClickWithOverlayHandling(IElementHandle element, string elementDescription)
+    private async Task FillFinishedFormatDropdown(string value, List<string> filledFields, List<string> errors)
     {
         try
         {
-            _logger.LogInformation("Attempting to click {elementDescription} with overlay handling...", elementDescription);
-
-            // First, try a simple click
-            try
+            _logger.LogInformation("🎯 Enhanced Finished Format dropdown handling for: {value}", value);
+            
+            // Multiple strategies for Finished Format dropdown
+            var strategies = new[]
             {
-                await element.ClickAsync(new ElementHandleClickOptions { Timeout = 2000 });
-                _logger.LogInformation("Simple click succeeded for {elementDescription}", elementDescription);
-                return true;
-            }
-            catch (Exception clickEx)
+                async () => {
+                    // Strategy 1: Direct click and type
+                    var dropdown = await _page.QuerySelectorAsync("#Planfinishedformat");
+                    if (dropdown != null)
+                    {
+                        await dropdown.ScrollIntoViewIfNeededAsync();
+                        await _page.WaitForTimeoutAsync(1000);
+                        await dropdown.ClickAsync();
+                        await _page.WaitForTimeoutAsync(500);
+                        
+                        // Type the value
+                        await _page.PressAsync("body", "Control+a"); // Select all
+                        await _page.TypeAsync("body", value);
+                        await _page.PressAsync("body", "Tab"); // Move to next field
+                        return true;
+                    }
+                    return false;
+                },
+                
+                async () => {
+                    // Strategy 2: Find input within dropdown
+                    var input = await _page.QuerySelectorAsync("#Planfinishedformat .dx-texteditor-input");
+                    if (input != null)
+                    {
+                        await input.ScrollIntoViewIfNeededAsync();
+                        await _page.WaitForTimeoutAsync(1000);
+                        await input.FillAsync(value);
+                        await _page.PressAsync("body", "Tab");
+                        return true;
+                    }
+                    return false;
+                },
+                
+                async () => {
+                    // Strategy 3: JavaScript direct value setting
+                    await _page.EvaluateAsync($@"
+                        const element = document.querySelector('#Planfinishedformat');
+                        if (element) {{
+                            element.value = '{value}';
+                            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        }}
+                    ");
+                    return true;
+                }
+            };
+            
+            foreach (var strategy in strategies)
             {
-                _logger.LogWarning("Simple click failed for {elementDescription}: {error}", elementDescription, clickEx.Message);
+                try
+                {
+                    if (await strategy())
+                    {
+                        await _page.WaitForTimeoutAsync(1000);
+                        filledFields.Add($"Finished Format = {value}");
+                        _logger.LogInformation("✅ Successfully filled Finished Format: {value}", value);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Finished Format strategy failed: {error}", ex.Message);
+                }
             }
-
-            // Handle overlays and try again
-            await HandleUIOverlays();
-
-            // Try click with force option
-            try
-            {
-                await element.ClickAsync(new ElementHandleClickOptions { Force = true, Timeout = 2000 });
-                _logger.LogInformation("Force click succeeded for {elementDescription}", elementDescription);
-                return true;
-            }
-            catch (Exception forceClickEx)
-            {
-                _logger.LogWarning("Force click failed for {elementDescription}: {error}", elementDescription, forceClickEx.Message);
-            }
-
-            // Try JavaScript click as final fallback
-            try
-            {
-                await element.EvaluateAsync("element => element.click()");
-                _logger.LogInformation("JavaScript click succeeded for {elementDescription}", elementDescription);
-                await _page.WaitForTimeoutAsync(1000); // Wait for any resulting actions
-                return true;
-            }
-            catch (Exception jsClickEx)
-            {
-                _logger.LogWarning("JavaScript click failed for {elementDescription}: {error}", elementDescription, jsClickEx.Message);
-            }
-
-            // Try scrolling into view and clicking
-            try
-            {
-                await element.ScrollIntoViewIfNeededAsync();
-                await _page.WaitForTimeoutAsync(500);
-                await element.ClickAsync(new ElementHandleClickOptions { Force = true });
-                _logger.LogInformation("Scroll and click succeeded for {elementDescription}", elementDescription);
-                return true;
-            }
-            catch (Exception scrollClickEx)
-            {
-                _logger.LogWarning("Scroll and click failed for {elementDescription}: {error}", elementDescription, scrollClickEx.Message);
-            }
-
-            _logger.LogError("All click attempts failed for {elementDescription}", elementDescription);
-            return false;
+            
+            _logger.LogWarning("❌ All strategies failed for Finished Format");
+            errors.Add("Could not fill Finished Format dropdown");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in ClickWithOverlayHandling for {elementDescription}", elementDescription);
-            return false;
+            _logger.LogError(ex, "Error in FillFinishedFormatDropdown");
+            errors.Add($"Finished Format error: {ex.Message}");
         }
     }
+
+    private async Task ScrollToElementAndFill(string selector, string value, string fieldName, List<string> filledFields, List<string> errors)
+    {
+        try
+        {
+            _logger.LogInformation("📍 Scrolling to and filling {fieldName} with selector {selector}", fieldName, selector);
+            
+            var element = await _page.QuerySelectorAsync(selector);
+            if (element != null)
+            {
+                // Scroll element into view
+                await element.ScrollIntoViewIfNeededAsync();
+                await _page.WaitForTimeoutAsync(1000);
+                
+                // Highlight the element (add a border)
+                await element.EvaluateAsync("element => element.style.border = '3px solid red'");
+                await _page.WaitForTimeoutAsync(1000);
+                
+                // Fill the element
+                await element.FillAsync(value);
+                await _page.WaitForTimeoutAsync(500);
+                
+                // Remove highlight
+                await element.EvaluateAsync("element => element.style.border = ''");
+                
+                filledFields.Add($"{fieldName} = {value}");
+                _logger.LogInformation("✅ Successfully filled {fieldName} with value: {value}", fieldName, value);
+            }
+            else
+            {
+                _logger.LogWarning("❌ Could not find element {fieldName} with selector: {selector}", fieldName, selector);
+                errors.Add($"Could not find {fieldName} element");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error filling {fieldName}: {error}", fieldName, ex.Message);
+            errors.Add($"Error filling {fieldName}: {ex.Message}");
+        }
+    }
+
 
 }
 

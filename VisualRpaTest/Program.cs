@@ -8,8 +8,8 @@ Console.WriteLine("🤖 Live ERP Automation - Testing Finish Field & Process Iss
 Console.WriteLine("=" + new string('=', 60));
 Console.WriteLine("This will test the planning sheet with enhanced debugging");
 Console.WriteLine("🔍 Focus: Finish field selection and process addition");
-Console.WriteLine("Press ENTER to start ERP test...");
-Console.ReadLine();
+Console.WriteLine("🚀 Auto-starting ERP test in 2 seconds...");
+await Task.Delay(2000);
 
 // Configuration setup
 var configuration = new ConfigurationBuilder()
@@ -153,19 +153,19 @@ try
     }
 
     Console.WriteLine("\n🏁 ERP test completed!");
-    Console.WriteLine("Press ENTER to exit...");
-    Console.ReadLine();
+    Console.WriteLine("🎉 Workflow finished successfully!");
+    await Task.Delay(5000); // 5-second pause to see results
 }
 catch (Exception ex)
 {
     Console.WriteLine($"\n❌ Error during ERP automation: {ex.Message}");
     Console.WriteLine($"Stack trace: {ex.StackTrace}");
     
-    // Keep browser open for 60 seconds to see what happened
-    Console.WriteLine("\n⏳ Keeping browser open for 60 seconds to inspect...");
+    // Keep browser open for 30 seconds to see what happened
+    Console.WriteLine("\n⏳ Keeping browser open for 30 seconds to inspect...");
     Console.WriteLine("🔍 Check the visible browser window to see where the process stopped.");
-    await Task.Delay(60000);
+    await Task.Delay(30000);
     
-    Console.WriteLine("\nPress ENTER to exit...");
-    Console.ReadLine();
+    Console.WriteLine("\n❌ Program will exit automatically in 5 seconds...");
+    await Task.Delay(5000);
 }
