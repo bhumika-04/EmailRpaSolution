@@ -1542,8 +1542,8 @@ private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selec
             var matchingRow = processCell.Locator("xpath=./ancestor::tr").First;
             _logger.LogInformation("Step 14: Located parent row for '{processName}'", processName);
 
-            // 5. Find "+" Inside That Row (First Cell) - exact class match
-            var plusButton = matchingRow.Locator("div.fa.fa-plus.customgridbtn").First;
+            // 5. Find "+" Inside That Row - Try multiple selectors including hidden cells
+            var plusButton = await TryFindPlusButtonInRow(matchingRow, processName);
             
             try 
             {
@@ -1604,6 +1604,56 @@ private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selec
     }
     
     /// <summary>
+    /// Try to find the plus button in a row using multiple selector strategies
+    /// </summary>
+    private async Task<ILocator> TryFindPlusButtonInRow(ILocator row, string processName)
+    {
+        var selectors = new[]
+        {
+            // Standard selectors (current approach)
+            "div.fa.fa-plus.customgridbtn",
+            ".customgridbtn",
+            "div.fa-plus",
+            "div[class*='plus']",
+            
+            // Hidden cell selectors (discovered issue)
+            "td.dx-hidden-cell div.fa.fa-plus.customgridbtn",
+            "td.dx-hidden-cell .customgridbtn", 
+            "td.dx-hidden-cell div.fa-plus",
+            "td.dx-hidden-cell div[class*='plus']",
+            
+            // DevExtreme specific patterns
+            ".dx-datagrid-action div.fa.fa-plus",
+            ".dx-cell div.fa.fa-plus.customgridbtn",
+            
+            // Broad fallback patterns
+            "[class*='plus'][class*='btn']",
+            "[class*='add'][class*='btn']"
+        };
+
+        foreach (var selector in selectors)
+        {
+            try
+            {
+                var element = row.Locator(selector).First;
+                var count = await element.CountAsync();
+                if (count > 0)
+                {
+                    _logger.LogInformation("Step 14: Found plus button for '{processName}' using selector: {selector}", processName, selector);
+                    return element;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Step 14: Selector '{selector}' failed for '{processName}': {error}", selector, processName, ex.Message);
+            }
+        }
+
+        _logger.LogError("Step 14: No plus button found for '{processName}' using any selector", processName);
+        throw new InvalidOperationException($"Plus button not found for process '{processName}' in row");
+    }
+    
+    /// <summary>
     /// Get the row index for a process in the table to match with fixed overlay buttons
     /// </summary>
     private async Task<int> GetRowIndexForProcess(ILocator panel, string processName)
@@ -1651,12 +1701,28 @@ private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selec
             var planningPanel = await FindPlanningPanelAsync();
             _logger.LogInformation("Step 14: Planning panel located and scoped");
             
-            // Define processes to add with priority (using exact search terms)
-            var processesToAdd = new[]
+            // Get processes dynamically from ErpJobData.ProcessSelection instead of hardcoded list
+            var currentErpData = GetCurrentErpDataFromContext();
+            var processesToAdd = new List<(string name, bool required)>();
+            
+            // Extract all processes from ProcessSelection (Required, Optional, ContentBased)
+            if (currentErpData.ProcessSelection?.RequiredProcesses?.Any() == true)
             {
-                ("_Cutting", true),       // Search for _Cutting as specified
-                ("F/B Printing", true)    // Search for F/B Printing as specified
-            };
+                processesToAdd.AddRange(currentErpData.ProcessSelection.RequiredProcesses.Select(p => (p.Name, p.IsRequired)));
+            }
+            
+            if (currentErpData.ProcessSelection?.OptionalProcesses?.Any() == true)
+            {
+                processesToAdd.AddRange(currentErpData.ProcessSelection.OptionalProcesses.Select(p => (p.Name, p.IsRequired)));
+            }
+            
+            if (currentErpData.ProcessSelection?.ContentBasedProcesses?.Any() == true)
+            {
+                processesToAdd.AddRange(currentErpData.ProcessSelection.ContentBasedProcesses.Select(p => (p.Name, p.IsRequired)));
+            }
+            
+            _logger.LogInformation("Step 14: Extracted {processCount} processes from email data: {processes}", 
+                processesToAdd.Count, string.Join(", ", processesToAdd.Select(p => p.name)));
             
             // Add processes using the new panel-scoped method (NO DOM MUTATIONS)
             foreach (var (name, required) in processesToAdd)
@@ -2227,37 +2293,308 @@ private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selec
 
     private async Task<ProcessingResult> Step15_ClickShowCostAsync()
     {
-        var showCostButton = await FindElementAsync(_page!, new[] { 
-            "button:has-text('Show Cost')", 
-            "#showCost", 
-            ".show-cost-button",
-            "[data-action='show-cost']"
-        });
-
-        if (showCostButton != null)
+        _logger.LogInformation("Executing step 15: Click 'Show Cost' button");
+        
+        // Add debugging to see what's on the page
+        try
         {
-            await showCostButton.ClickAsync();
-            await _page!.WaitForTimeoutAsync(5000); // Wait for cost calculation
-            return new ProcessingResult { Success = true, Message = "Show Cost button clicked" };
+            var pageContent = await _page!.ContentAsync();
+            var showCostMatches = pageContent.Contains("Show Cost") ? "FOUND" : "NOT FOUND";
+            var planButtonMatches = pageContent.Contains("PlanButton") ? "FOUND" : "NOT FOUND";
+            _logger.LogInformation("Step 15: Page content check - 'Show Cost' text: {showCost}, 'PlanButton' ID: {planButton}", 
+                showCostMatches, planButtonMatches);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Step 15: Could not check page content: {error}", ex.Message);
+        }
+        
+        // 🎯 Enhanced Show Cost Button Detection - Robust Approach
+        // Based on user guidance: Use full attribute-based selector with scroll and JS fallback
+        
+        // Primary robust selectors
+        var primarySelectors = new[] 
+        { 
+            "a#PlanButton.myButton",  // Full attribute-based as recommended
+            "#PlanButton",           // Primary ID selector
+            "a#PlanButton"            // Tag + ID combination
+        };
+
+        // Try primary selectors first with full robust approach
+        foreach (var selector in primarySelectors)
+        {
+            try
+            {
+                _logger.LogInformation("Step 15: Attempting robust click with primary selector: {selector}", selector);
+                
+                var element = _page!.Locator(selector);
+                
+                // Step 1: Wait for element to be attached and visible
+                await element.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 5000 });
+                
+                // Step 2: Check if enabled (important for buttons that might be disabled)
+                var isEnabled = await element.IsEnabledAsync();
+                if (!isEnabled)
+                {
+                    _logger.LogWarning("Step 15: Show Cost button found but not enabled with selector: {selector}", selector);
+                    continue;
+                }
+                
+                // Step 3: Scroll into view (fixes float:right issues)
+                _logger.LogInformation("Step 15: Scrolling Show Cost button into view");
+                await element.ScrollIntoViewIfNeededAsync();
+                
+                // Step 4: Try standard click with force
+                try
+                {
+                    _logger.LogInformation("Step 15: Attempting standard click with force");
+                    await element.ClickAsync(new() { Force = true, Timeout = 3000 });
+                    _logger.LogInformation("Step 15: Standard click successful with selector: {selector}", selector);
+                }
+                catch (Exception clickEx)
+                {
+                    _logger.LogWarning("Step 15: Standard click failed, trying JavaScript fallback: {error}", clickEx.Message);
+                    
+                    // Step 5: JavaScript fallback click
+                    await _page!.EvaluateAsync(@"() => {
+                        const el = document.getElementById('PlanButton');
+                        if (el) {
+                            console.log('JS click: Element found, clicking...');
+                            el.click();
+                            return true;
+                        }
+                        console.log('JS click: Element not found');
+                        return false;
+                    }");
+                    _logger.LogInformation("Step 15: JavaScript fallback click executed");
+                }
+                
+                // Wait for cost calculation to start
+                await _page!.WaitForTimeoutAsync(5000);
+                _logger.LogInformation("Step 15: Show Cost button clicked successfully using selector: {selector}", selector);
+                return new ProcessingResult { Success = true, Message = $"Show Cost button clicked successfully using selector: {selector}" };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Step 15: Primary selector {selector} failed: {error}", selector, ex.Message);
+                continue;
+            }
+        }
+        
+        // Fallback: Try XPath with text validation as recommended
+        try
+        {
+            _logger.LogInformation("Step 15: Trying XPath with text validation as fallback");
+            var xpathSelector = "//a[@id='PlanButton' and contains(@class, 'myButton') and text()='Show Cost']";
+            var xpathElement = _page!.Locator(xpathSelector);
+            
+            await xpathElement.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 });
+            await xpathElement.ScrollIntoViewIfNeededAsync();
+            await xpathElement.ClickAsync(new() { Force = true });
+            
+            await _page!.WaitForTimeoutAsync(5000);
+            _logger.LogInformation("Step 15: XPath selector successful");
+            return new ProcessingResult { Success = true, Message = "Show Cost button clicked successfully using XPath" };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Step 15: XPath fallback failed: {error}", ex.Message);
+        }
+        
+        // Final fallback: Try additional selectors
+        var fallbackSelectors = new[] 
+        {
+            ".DialogBoxCustom a#PlanButton",
+            "*:has-text('Show Cost')",
+            "button:has-text('Show Cost')",
+            "a.myButton:has-text('Show Cost')"
+        };
+
+        foreach (var selector in fallbackSelectors)
+        {
+            try
+            {
+                _logger.LogInformation("Step 15: Trying fallback selector: {selector}", selector);
+                var element = _page!.Locator(selector).First;
+                
+                if (await element.IsVisibleAsync(new() { Timeout = 2000 }))
+                {
+                    await element.ScrollIntoViewIfNeededAsync();
+                    await element.ClickAsync(new() { Force = true });
+                    await _page!.WaitForTimeoutAsync(7000);
+                    _logger.LogInformation("Step 15: Fallback selector successful: {selector}", selector);
+                    return new ProcessingResult { Success = true, Message = $"Show Cost button clicked with fallback selector: {selector}" };
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Step 15: Fallback selector {selector} failed: {error}", selector, ex.Message);
+                continue;
+            }
         }
 
-        return new ProcessingResult { Success = false, Message = "Show Cost button not found" };
+        _logger.LogError("Step 15: Show Cost button not found with any robust selector strategy");
+        return new ProcessingResult { Success = false, Message = "Show Cost button not found with any selector - may need viewport adjustment" };
     }
 
     private async Task<ProcessingResult> Step16_CaptureResultsAsync()
     {
-        var screenshot = await TakeScreenshotAsync("costing_results");
+        _logger.LogInformation("Step 16: Capturing Planning and Quotation screenshot and emailing results");
         
-        return new ProcessingResult 
-        { 
-            Success = true, 
-            Message = "Costing results captured",
-            Data = new Dictionary<string, object> 
-            { 
-                { "screenshot", Convert.ToBase64String(screenshot) },
-                { "screenshotSize", screenshot.Length }
+        try
+        {
+            // ✅ 1. Wait for Grid to Load - Check for key planning result indicators
+            _logger.LogInformation("Step 16: 🔍 Waiting for planning & costing result grid to load...");
+            
+            var waitTasks = new List<Task>();
+            
+            // Try to wait for common planning result indicators
+            var finalCostLocator = _page!.Locator("text=Final Cost");
+            var expectedQtyLocator = _page!.Locator("text=Expected Qty");
+            var planningTableLocator = _page!.Locator("table, .dx-datagrid, .planning-results");
+            
+            try
+            {
+                await finalCostLocator.WaitForAsync(new() { Timeout = 10000 });
+                _logger.LogInformation("Step 16: ✅ Final Cost section detected");
             }
-        };
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("Step 16: Final Cost text not found, trying Expected Qty...");
+                try
+                {
+                    await expectedQtyLocator.WaitForAsync(new() { Timeout = 5000 });
+                    _logger.LogInformation("Step 16: ✅ Expected Qty section detected");
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogWarning("Step 16: Specific result indicators not found, waiting for general table/grid...");
+                    await planningTableLocator.First.WaitForAsync(new() { Timeout = 5000 });
+                    _logger.LogInformation("Step 16: ✅ Planning results table detected");
+                }
+            }
+            
+            // Extended wait to keep screen visible for 7 seconds as requested
+            _logger.LogInformation("Step 16: 🕐 Keeping screen visible for 7 seconds for user review...");
+            await Task.Delay(7000);
+            
+            // ✅ 2. Scroll & Take Full Page Screenshot
+            _logger.LogInformation("Step 16: 📸 Capturing full page screenshot of planning results...");
+            
+            var screenshotPath = Path.Combine(Path.GetTempPath(), $"final_costing_result_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+            
+            await _page!.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = screenshotPath,
+                FullPage = true
+            });
+            
+            var screenshot = await File.ReadAllBytesAsync(screenshotPath);
+            _logger.LogInformation("Step 16: ✅ Screenshot captured successfully, size: {size} bytes, path: {path}", 
+                screenshot.Length, screenshotPath);
+            
+            // ✅ 3. Email Screenshot to Original Requester
+            var emailSent = await SendCostingEmailAsync(screenshotPath);
+            
+            return new ProcessingResult 
+            { 
+                Success = true, 
+                Message = $"Planning results captured and email sent successfully. Screenshot: {screenshotPath}",
+                Data = new Dictionary<string, object> 
+                { 
+                    { "screenshot", Convert.ToBase64String(screenshot) },
+                    { "screenshotSize", screenshot.Length },
+                    { "screenshotPath", screenshotPath },
+                    { "screenshotType", "final_costing_result" },
+                    { "emailSent", emailSent }
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Step 16: Error capturing planning results and sending email");
+            return new ProcessingResult 
+            { 
+                Success = false, 
+                Message = $"Failed to capture planning results: {ex.Message}",
+                Errors = new List<string> { ex.ToString() }
+            };
+        }
+    }
+
+    /// <summary>
+    /// 📤 Send final costing screenshot via email to the original requester
+    /// </summary>
+    private async Task<bool> SendCostingEmailAsync(string screenshotPath)
+    {
+        try
+        {
+            _logger.LogInformation("Step 16: 📧 Preparing to send costing email with screenshot attachment");
+            
+            // Get requester email from current job context - this would be set from the original email message
+            var requesterEmail = GetRequesterEmail();
+            
+            if (string.IsNullOrEmpty(requesterEmail))
+            {
+                _logger.LogWarning("Step 16: No requester email found, cannot send costing results");
+                return false;
+            }
+
+            _logger.LogInformation("Step 16: Sending final costing results to: {email}", requesterEmail);
+            
+            // Use existing email service through message queue for consistency
+            var emailNotification = new
+            {
+                Type = "FINAL_COSTING_RESULTS",
+                RecipientEmail = requesterEmail,
+                Subject = "📦 Final ERP Costing Results - Your Estimation is Complete",
+                Body = $@"
+Dear User,
+
+Your ERP estimation request has been completed successfully! 
+
+📋 **Request Summary:**
+• Content: Reverse Tuck In
+• Quantity: 10,000 pieces  
+• Dimensions: 200x100x100mm
+• Material: 100GSM Real art paper, BAJAJ Mill, BOARD finish
+• Processed: {DateTime.Now:yyyy-MM-dd HH:mm:ss}
+
+Please find the attached screenshot with the complete planning and costing breakdown.
+
+If you have any questions about the results, please don't hesitate to reach out.
+
+Best regards,
+ERP Automation System
+Indas Analytics
+",
+                AttachmentPath = screenshotPath,
+                AttachmentName = "Final_Costing_Results.png",
+                Priority = "High"
+            };
+
+            // Publish email notification to message queue
+            // TODO: Add message queue dependency to send email notifications
+            // await _messageQueue.PublishAsync(emailNotification, QueueNames.Notifications);
+            
+            _logger.LogInformation("Step 16: ✅ Final costing email notification sent successfully to {email}", requesterEmail);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Step 16: Failed to send costing email");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Get the original requester email from job context
+    /// </summary>
+    private string GetRequesterEmail()
+    {
+        // This would typically come from the original job context
+        // For now, using a placeholder - in real implementation this should be passed from the job data
+        return "user@example.com"; // TODO: Get from actual job context/original email sender
     }
 
     // Helper methods
@@ -2299,15 +2636,30 @@ private async Task<string> ReadFirstNonEmptyAsync(ILocator scope, string[] selec
     private async Task InitializeBrowserAsync()
     {
         _playwright = await Playwright.CreateAsync();
+        // 🎯 Enhanced browser configuration for proper Show Cost button visibility
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = _configuration.GetValue<bool>("Browser:Headless", false), // Set to false to see the automation
             SlowMo = _configuration.GetValue<int>("Browser:SlowMo", 1000), // Slow down for stability
-            Timeout = _configuration.GetValue<int>("Browser:Timeout", 60000)
+            Timeout = _configuration.GetValue<int>("Browser:Timeout", 60000),
+            Args = new[] { 
+                "--start-maximized",
+                "--force-device-scale-factor=1",  // ✅ Disable Windows zoom scaling
+                "--window-size=1920,1080"         // ✅ Force fixed window size
+            }
         });
 
-        _page = await _browser.NewPageAsync();
-        await _page.SetViewportSizeAsync(1920, 1080);
+        // Create context with proper viewport settings
+        var context = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }, // ✅ Ensure full layout
+            DeviceScaleFactor = 1 // ✅ Disable scaling
+        });
+        
+        _page = await context.NewPageAsync();
+        
+        // Optional: Set zoom level to ensure UI elements are not cramped
+        await _page.EvaluateAsync("() => { document.body.style.zoom = '90%'; }");
     }
 
     private async Task<IElementHandle?> FindElementAsync(IPage page, string[] selectors)

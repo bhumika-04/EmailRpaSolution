@@ -43,18 +43,18 @@ var testErpData = new ErpJobData
     },
     JobSize = new JobSize
     {
-        Height = 100,
-        Length = 150,
-        Width = 50,
-        OFlap = 20,
-        PFlap = 20
+        Height = 200,
+        Length = 100,
+        Width = 100,
+        OFlap = 10,
+        PFlap = 10
     },
     Material = new Material
     {
-        Quality = "Real Art Paper",
-        Gsm = 250,
-        Mill = "Bajaj",
-        Finish = "Gloss"
+        Quality = "100GSM Real art paper",
+        Gsm = 100,
+        Mill = "BAJAJ",
+        Finish = "BOARD"
     },
     PrintingDetails = new PrintingDetails
     {
@@ -69,8 +69,8 @@ var testErpData = new ErpJobData
     {
         MakeReadySheets = 0,
         WastageType = "Machine Default",
-        GrainDirection = "Across",
-        OnlineCoating = "Aqua Matt"
+        GrainDirection = "Both",
+        OnlineCoating = "Aqua matt"
     },
     FinishingFields = new FinishingFields
     {
@@ -86,7 +86,7 @@ var testErpData = new ErpJobData
         {
             new ProcessDefinition
             {
-                Name = "Cutting",
+                Name = "_Cutting",
                 Category = "Finishing",
                 IsRequired = true,
                 DisplayOrder = 1,
@@ -94,10 +94,26 @@ var testErpData = new ErpJobData
             },
             new ProcessDefinition
             {
-                Name = "F/B Printing",
+                Name = "printing (AK)",
                 Category = "Printing",
                 IsRequired = true,
                 DisplayOrder = 2,
+                Parameters = new Dictionary<string, string>()
+            },
+            new ProcessDefinition
+            {
+                Name = "Punching HA",
+                Category = "Finishing",
+                IsRequired = true,
+                DisplayOrder = 3,
+                Parameters = new Dictionary<string, string>()
+            },
+            new ProcessDefinition
+            {
+                Name = "Lamination AK",
+                Category = "Finishing",
+                IsRequired = true,
+                DisplayOrder = 4,
                 Parameters = new Dictionary<string, string>()
             }
         },
